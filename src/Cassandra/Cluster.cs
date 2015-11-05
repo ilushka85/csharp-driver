@@ -19,6 +19,8 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Net;
 using System.Threading;
+using Cassandra.Tasks;
+using Microsoft.IO;
 
 namespace Cassandra
 {
@@ -28,9 +30,10 @@ namespace Cassandra
     /// <inheritdoc />
     public class Cluster : ICluster
     {
-        private static int _maxProtocolVersion = 3;
+        private static int _maxProtocolVersion = 4;
+        // ReSharper disable once InconsistentNaming
         private static readonly Logger _logger = new Logger(typeof(Cluster));
-        private int _binaryProtocolVersion;
+        private byte _protocolVersion;
         private readonly ConcurrentBag<Session> _connectedSessions = new ConcurrentBag<Session>();
         private ControlConnection _controlConnection;
         private volatile bool _initialized;
@@ -72,7 +75,11 @@ namespace Cassandra
         }
 
         /// <summary>
-        /// Gets or sets the maximum protocol version used by this driver
+        /// Gets or sets the maximum protocol version used by this driver.
+        /// <para>
+        /// While property value is maintained for backward-compatibility, 
+        /// use <see cref="ProtocolOptions.SetMaxProtocolVersion(byte)"/> to set the maximum protocol version used by the driver.
+        /// </para>
         /// </summary>
         public static int MaxProtocolVersion
         {
@@ -127,17 +134,24 @@ namespace Cassandra
                     //There was an exception that is not possible to recover from
                     throw _initException;
                 }
-                _controlConnection = new ControlConnection(this, _metadata);
+                _protocolVersion = (byte) MaxProtocolVersion;
+                if (Configuration.ProtocolOptions.MaxProtocolVersion != null &&
+                    Configuration.ProtocolOptions.MaxProtocolVersion < MaxProtocolVersion
+                    )
+                {
+                    _protocolVersion = Configuration.ProtocolOptions.MaxProtocolVersion.Value;
+                }
+                //create the buffer pool with 16KB for small buffers and 256Kb for large buffers.
+                Configuration.BufferPool = new RecyclableMemoryStreamManager(16 * 1024, 256 * 1024, ProtocolOptions.MaximumFrameLength);
+                _controlConnection = new ControlConnection(_protocolVersion, Configuration, _metadata);
                 _metadata.ControlConnection = _controlConnection;
                 try
                 {
                     _controlConnection.Init();
-                    _binaryProtocolVersion = _controlConnection.ProtocolVersion;
-                    if (_controlConnection.ProtocolVersion > MaxProtocolVersion)
-                    {
-                        _binaryProtocolVersion = MaxProtocolVersion;
-                    }
+                    _protocolVersion = _controlConnection.ProtocolVersion;
+                    //Initialize policies
                     Configuration.Policies.LoadBalancingPolicy.Initialize(this);
+                    Configuration.Policies.SpeculativeExecutionPolicy.Initialize(this);
                 }
                 catch (NoHostAvailableException)
                 {
@@ -152,7 +166,8 @@ namespace Cassandra
                     //Throw the actual exception for the first time
                     throw;
                 }
-                _logger.Info("Cluster Connected using binary protocol version: [" + _binaryProtocolVersion + "]");
+                Configuration.Timer = new HashedWheelTimer();
+                _logger.Info("Cluster Connected using binary protocol version: [" + _protocolVersion + "]");
                 _initialized = true;
                 _metadata.Hosts.Added += OnHostAdded;
                 _metadata.Hosts.Removed += OnHostRemoved;
@@ -181,10 +196,10 @@ namespace Cassandra
         public ISession Connect(string keyspace)
         {
             Init();
-            var session = new Session(this, Configuration, keyspace, _binaryProtocolVersion);
-            session.Init(true);
+            var session = new Session(this, Configuration, keyspace, _protocolVersion);
+            session.Init();
             _connectedSessions.Add(session);
-            _logger.Info("Session connected!");
+            _logger.Info("Session connected ({0})", session.GetHashCode());
             return session;
         }
 
@@ -268,7 +283,8 @@ namespace Cassandra
             }
             _metadata.ShutDown(timeoutMs);
             _controlConnection.Dispose();
-
+            Configuration.Timer.Dispose();
+            Configuration.Policies.SpeculativeExecutionPolicy.Dispose();
             _logger.Info("Cluster [" + _metadata.ClusterName + "] has been shut down.");
         }
     }

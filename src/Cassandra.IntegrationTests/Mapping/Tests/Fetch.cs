@@ -28,24 +28,23 @@ using NUnit.Framework;
 namespace Cassandra.IntegrationTests.Mapping.Tests
 {
     [Category("short")]
-    public class Fetch : TestGlobals
+    public class Fetch : SharedClusterTest
     {
         ISession _session;
         private string _uniqueKsName;
 
-        [SetUp]
-        public void SetupTest()
+        protected override void TestFixtureSetUp()
         {
-            _session = TestClusterManager.GetTestCluster(1).Session;
+            base.TestFixtureSetUp();
+            _session = Session;
+        }
+
+        [SetUp]
+        public void TestSetup()
+        {
             _uniqueKsName = TestUtils.GetUniqueKeyspaceName();
             _session.CreateKeyspace(_uniqueKsName);
             _session.ChangeKeyspace(_uniqueKsName);
-        }
-
-        [TearDown]
-        public void TeardownTest()
-        {
-            TestUtils.TryToDeleteKeyspace(_session, _uniqueKsName);
         }
 
         /// <summary>
@@ -72,49 +71,27 @@ namespace Cassandra.IntegrationTests.Mapping.Tests
         }
 
         /// <summary>
-        /// Successfully Fetch mapped records by passing in a static 'select' query string
-        /// using a Poco that contains various nested collections
-        /// 
-        /// @test_category data_types:collections
-        /// </summary>
-        [Test, TestCassandraVersion(2, 1, 3)]
-        [NUnit.Framework.Ignore("Pending question regarding error: 'Non-frozen collections are not allowed inside collections'")]
-        public void Fetch_UsingSelectCqlString_NestedCollections()
-        {
-            NestedCollectionsPoco.SetupDefaultTable(_session);
-            var mapper = new Mapper(_session, NestedCollectionsPoco.GetDefaultMappingConfig());
-
-            NestedCollectionsPoco nestedCollectionsPocoExpected = NestedCollectionsPoco.GetRandomInstance();
-            mapper.Insert(nestedCollectionsPocoExpected);
-            List<NestedCollectionsPoco> pocos = mapper.Fetch<NestedCollectionsPoco>("SELECT * from " + typeof(NestedCollectionsPoco).Name).ToList();
-            Assert.AreEqual(1, pocos.Count);
-            nestedCollectionsPocoExpected.AssertEquals(pocos[0]);
-        }
-
-        /// <summary>
-        /// Successfully insert a new record into a table that was created with fluent mapping
+        /// Successfully Fetch mapped records by passing in a static query string
         /// </summary>
         [Test]
-        public void Fetch_NoArgDefaultsToSelectAll()
+        public void FetchAsync_Using_Select_Cql_And_PageSize()
         {
-            var config = new MappingConfiguration().Define(new ManyDataTypesPocoMappingCaseSensitive());
-            var table = new Table<ManyDataTypesPoco>(_session, config);
+            var table = new Table<Author>(_session, new MappingConfiguration());
             table.Create();
 
-            var mapper = new Mapper(_session, config);
-            List<ManyDataTypesPoco> manyTypesList = new List<ManyDataTypesPoco>();
-            for (int i = 0; i < 10; i++)
+            var mapper = new Mapper(_session, new MappingConfiguration().Define(new FluentUserMapping()));
+            var ids = new[] {Guid.NewGuid().ToString(), Guid.NewGuid().ToString()};
+
+            mapper.Insert(new Author { AuthorId = ids[0] });
+            mapper.Insert(new Author { AuthorId = ids[1] });
+
+            List<Author> authors = null;
+            mapper.FetchAsync<Author>(Cql.New("SELECT * from " + table.Name).WithOptions(o => o.SetPageSize(int.MaxValue))).ContinueWith(t =>
             {
-                manyTypesList.Add(ManyDataTypesPoco.GetRandomInstance());
-            }
-            foreach (var manyTypesRecord in manyTypesList)
-                mapper.Insert(manyTypesRecord);
-
-            List<ManyDataTypesPoco> instancesRetrieved = mapper.Fetch<ManyDataTypesPoco>().ToList();
-            Assert.AreEqual(manyTypesList.Count, instancesRetrieved.Count);
-
-            foreach (var instanceRetrieved in instancesRetrieved)
-                ManyDataTypesPoco.AssertListContains(manyTypesList, instanceRetrieved);
+                authors = t.Result.ToList();
+            }).Wait();
+            Assert.AreEqual(2, authors.Count);;
+            CollectionAssert.AreEquivalent(ids, authors.Select(a => a.AuthorId));
         }
 
         /// <summary>

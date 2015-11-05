@@ -1,7 +1,6 @@
 # DataStax C# Driver for Apache Cassandra
 
-A C# client driver for Apache Cassandra. This driver works exclusively with
-the Cassandra Query Language version 3 (CQL3) and Cassandra's binary protocol.
+A modern, [feature-rich](#features) and highly tunable C# client library for Apache Cassandra (1.2+) and DataStax Enterprise (3.1+) using exclusively Cassandra's binary protocol and Cassandra Query Language v3.
 
 ## Installation
 
@@ -14,12 +13,14 @@ PM> Install-Package CassandraCSharpDriver
 
 ## Features
 
+- Sync and [Async](#asynchronous-api) API
+- Simple, [Prepared](#prepared-statements), and [Batch](#batching-statements) statements
+- Asynchronous IO, parallel execution, request pipelining
 - Connection pooling
-- Node discovery
-- Automatic failover
-- Several load balancing and retry policies
-- Result paging
-- Query batching
+- Auto node discovery
+- Automatic reconnection
+- Configurable [load balancing][policies] and [retry policies][policies]
+- Works with any cluster size
 - [Linq2Cql][linq] and Ado.Net support
 
 ## Documentation
@@ -194,6 +195,9 @@ var statement = new SimpleStatement(query)
   .SetRetryPolicy(DowngradingConsistencyRetryPolicy.Instance)
   .SetPageSize(1000);
 ```
+## Feedback Requested
+
+**Help us focus our efforts!** Provide your input on the [Platform and Runtime Survey][survey] (we kept it short).
 
 ## Building and running the tests
 
@@ -216,16 +220,18 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 
-  [apidocs]: http://www.datastax.com/drivers/csharp/2.5/html/N_Cassandra.htm
-  [docindex]: http://www.datastax.com/documentation/developer/csharp-driver/2.5/
+  [apidocs]: http://www.datastax.com/drivers/csharp/2.7/html/N_Cassandra.htm
+  [docindex]: http://www.datastax.com/documentation/developer/csharp-driver/2.7/
   [getting-started]: http://planetcassandra.org/getting-started-with-apache-cassandra-and-net/
   [nuget]: https://nuget.org/packages/CassandraCSharpDriver/
   [mailinglist]: https://groups.google.com/a/lists.datastax.com/forum/#!forum/csharp-driver-user
   [jira]: https://datastax-oss.atlassian.net/browse/CSHARP
-  [udt]: https://issues.apache.org/jira/browse/CASSANDRA-5590
+  [udt]: http://docs.datastax.com/en/cql/3.1/cql/cql_reference/cqlRefUDType.html
   [poco]: http://en.wikipedia.org/wiki/Plain_Old_CLR_Object
-  [linq]: http://www.datastax.com/documentation/developer/csharp-driver/2.5/csharp-driver/reference/linqComponent.html
-  [mapper]: http://www.datastax.com/documentation/developer/csharp-driver/2.5/csharp-driver/reference/mapperComponent.html
-  [components]: http://www.datastax.com/documentation/developer/csharp-driver/2.5/csharp-driver/reference/driverComponents.html
+  [linq]: http://www.datastax.com/documentation/developer/csharp-driver/2.7/csharp-driver/reference/linqComponent.html
+  [mapper]: http://www.datastax.com/documentation/developer/csharp-driver/2.7/csharp-driver/reference/mapperComponent.html
+  [components]: http://www.datastax.com/documentation/developer/csharp-driver/2.7/csharp-driver/reference/driverComponents.html
+  [policies]: http://docs.datastax.com/en/developer/csharp-driver/2.7/common/drivers/reference/tuningPolicies_c.html
   [upgrade-to-250]: https://github.com/datastax/csharp-driver/blob/master/doc/upgrade-guide-2.5.md
   [upgrade-to-200]: https://github.com/datastax/csharp-driver/blob/master/doc/upgrade-guide-2.0.md
+  [survey]: http://goo.gl/forms/3BxcP8nKs6

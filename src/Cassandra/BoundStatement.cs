@@ -16,6 +16,7 @@
 
 using System;
 using System.Linq;
+using Cassandra.Requests;
 
 namespace Cassandra
 {
@@ -65,6 +66,14 @@ namespace Cassandra
         }
 
         /// <summary>
+        /// Initializes a new instance of the Cassandra.BoundStatement class
+        /// </summary>
+        public BoundStatement()
+        {
+            //Default constructor for client test and mocking frameworks
+        }
+
+        /// <summary>
         ///  Creates a new <c>BoundStatement</c> from the provided prepared
         ///  statement.
         /// </summary>
@@ -74,6 +83,10 @@ namespace Cassandra
             _preparedStatement = statement;
             _routingKey = statement.RoutingKey;
             SetConsistencyLevel(statement.ConsistencyLevel);
+            if (statement.IsIdempotent != null)
+            {
+                SetIdempotence(statement.IsIdempotent.Value);
+            }
         }
         
         /// <summary>

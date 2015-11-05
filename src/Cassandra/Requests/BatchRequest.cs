@@ -15,14 +15,16 @@
 //
 using System;
 using System.Collections.Generic;
+using System.IO;
+using System.Linq;
 
-namespace Cassandra
+namespace Cassandra.Requests
 {
-    internal class BatchRequest : ICqlRequest, IRequest
+    internal class BatchRequest : ICqlRequest
     {
         public const byte OpCode = 0x0D;
 
-        private readonly byte _headerFlags;
+        private FrameHeader.HeaderFlag _headerFlags;
         private readonly QueryProtocolOptions.QueryFlags _batchFlags = 0;
         private readonly ICollection<IQueryRequest> _requests;
         private readonly BatchType _type;
@@ -30,6 +32,8 @@ namespace Cassandra
         private readonly ConsistencyLevel? _serialConsistency;
 
         public ConsistencyLevel Consistency { get; set; }
+
+        public IDictionary<string, byte[]> Payload { get; set; }
 
         public int ProtocolVersion { get; set; }
 
@@ -41,18 +45,15 @@ namespace Cassandra
                 throw new NotSupportedException("Batch request is supported in C* >= 2.0.x");
             }
 
-            var subRequests = new List<IQueryRequest>();
-            foreach (var q in statement.Queries)
-            {
-                subRequests.Add(q.CreateBatchRequest(ProtocolVersion));
-            }
             _type = statement.BatchType;
-            _requests = subRequests;
+            _requests = statement.Queries
+                .Select(q => q.CreateBatchRequest(ProtocolVersion))
+                .ToArray();
             Consistency = consistency;
             _timestamp = statement.Timestamp;
             if (statement.IsTracing)
             {
-                _headerFlags = 0x02;
+                _headerFlags = FrameHeader.HeaderFlag.Tracing;
             }
             if (statement.SerialConsistencyLevel != ConsistencyLevel.Any)
             {
@@ -77,12 +78,21 @@ namespace Cassandra
             }
         }
 
-        public RequestFrame GetFrame(short streamId)
+        public int WriteFrame(short streamId, MemoryStream stream)
         {
             //protocol v2: <type><n><query_1>...<query_n><consistency>
             //protocol v3: <type><n><query_1>...<query_n><consistency><flags>[<serial_consistency>][<timestamp>]
-            var wb = new BEBinaryWriter();
-            wb.WriteFrameHeader((byte)ProtocolVersion, _headerFlags, streamId, OpCode);
+            var wb = new FrameWriter(stream);
+            if (Payload != null)
+            {
+                _headerFlags |= FrameHeader.HeaderFlag.CustomPayload;
+            }
+            wb.WriteFrameHeader((byte)ProtocolVersion, (byte)_headerFlags, streamId, OpCode);
+            if (Payload != null)
+            {
+                //A custom payload for this request
+                wb.WriteBytesMap(Payload);
+            }
             wb.WriteByte((byte) _type);
             wb.WriteInt16((short) _requests.Count);
             foreach (var br in _requests)
@@ -103,7 +113,7 @@ namespace Cassandra
                 //Expressed in microseconds
                 wb.WriteLong(TypeCodec.ToUnixTime(_timestamp.Value).Ticks / 10);
             }
-            return wb.GetFrame();
+            return wb.Close();
         }
     }
 }

@@ -29,6 +29,8 @@ namespace Cassandra.Data.Linq
 {
     internal class CqlExpressionVisitor : ExpressionVisitor
     {
+        private readonly string _utf8MaxValue = Encoding.UTF8.GetString(new byte[] { 0xF4, 0x8F, 0xBF, 0xBF });
+
         private static readonly Dictionary<ExpressionType, string> CqlTags = new Dictionary<ExpressionType, string>
         {
             {ExpressionType.Not, "NOT"},
@@ -68,7 +70,7 @@ namespace Cassandra.Data.Linq
         private readonly PocoData _pocoData;
         private bool _allowFiltering;
         private int _limit;
-        private readonly List<Tuple<string, object, ExpressionType>> _projections = new List<Tuple<string, object, ExpressionType>>();
+        private readonly List<Tuple<PocoColumn, object, ExpressionType>> _projections = new List<Tuple<PocoColumn, object, ExpressionType>>();
         private readonly List<Tuple<string, bool>> _orderBy = new List<Tuple<string, bool>>();
         private readonly List<string> _selectFields = new List<string>();
         /// <summary>
@@ -203,7 +205,7 @@ namespace Cassandra.Data.Linq
         /// <summary>
         /// Gets a cql UPDATE statement based on the current state
         /// </summary>
-        public string GetUpdate(out object[] values, int? ttl, DateTimeOffset? timestamp)
+        public string GetUpdate(out object[] values, int? ttl, DateTimeOffset? timestamp, MapperFactory mapperFactory)
         {
             var query = new StringBuilder();
             var parameters = new List<object>();
@@ -231,21 +233,23 @@ namespace Cassandra.Data.Linq
             var setStatements = new List<string>();
             foreach (var projection in _projections)
             {
-                var columnName = Escape(projection.Item1);
-                string operation = null;
+                var column = projection.Item1;
+                var columnName = Escape(column.ColumnName);
+                var value = mapperFactory.AdaptValue(_pocoData, column, projection.Item2);
+                string operation;
                 switch (projection.Item3)
                 {
                     case ExpressionType.AddAssign:
                         operation = " = " + columnName + " + ?";
-                        parameters.Add(projection.Item2);
+                        parameters.Add(value);
                         break;
                     case ExpressionType.PreIncrementAssign:
                         operation = " = ? + " + columnName;
-                        parameters.Add(projection.Item2);
+                        parameters.Add(value);
                         break;
                     case ExpressionType.SubtractAssign:
                         operation = " = " + columnName + " - ?";
-                        parameters.Add(projection.Item2);
+                        parameters.Add(value);
                         break;
                     case ExpressionType.Increment:
                         //Counter
@@ -257,7 +261,7 @@ namespace Cassandra.Data.Linq
                         break;
                     default:
                         operation = " = ?";
-                        parameters.Add(projection.Item2);
+                        parameters.Add(value);
                         break;
                 }
                 setStatements.Add(columnName + operation);
@@ -407,6 +411,11 @@ namespace Cassandra.Data.Linq
                 {
                     throw new CqlLinqNotSupportedException(binding, _parsePhase.Get());
                 }
+                if (binding.NodeType == ExpressionType.New)
+                {
+                    //Its a projection constructing a new instance
+                    return AddProjection(node);
+                }
 
                 string bindingName;
                 // ReSharper disable once ConditionIsAlwaysTrueOrFalse
@@ -421,7 +430,6 @@ namespace Cassandra.Data.Linq
                     {
                         throw new CqlLinqNotSupportedException(binding, _parsePhase.Get());
                     }
-
                     bindingName = memberExpression.Member.Name;
                 }
 
@@ -515,13 +523,36 @@ namespace Cassandra.Data.Linq
             {
                 return EvaluateConditionFunction(node);
             }
-            else if (_parsePhase.Get() == ParsePhase.SelectBinding)
+            if (_parsePhase.Get() == ParsePhase.SelectBinding)
             {
-                //Applied operators and functions to UPDATE or SELECT statement
-                return EvaluateProjectionFunction(node);
+                if (EvaluateOperatorMethod(node))
+                {
+                    //Applied operators and functions to UPDATE or SELECT statement
+                    return node;
+                }
+                //Try to evaluate the expression
+                return AddProjection(node);
             }
 
             throw new CqlLinqNotSupportedException(node, _parsePhase.Get());
+        }
+
+        /// <summary>
+        /// Tries to evaluate the current expression and add it as a projection
+        /// </summary>
+        private Expression AddProjection(Expression node, PocoColumn column = null)
+        {
+            var value = Expression.Lambda(node).Compile().DynamicInvoke();
+            if (column == null)
+            {
+                column = _pocoData.GetColumnByMemberName(_currentBindingName.Get());
+                if (column == null)
+                {
+                    throw new CqlLinqNotSupportedException(node, _parsePhase.Get());
+                } 
+            }
+            _projections.Add(Tuple.Create(column, value, ExpressionType.Assign));
+            return node;
         }
 
         private Expression EvaluateConditionFunction(MethodCallExpression node)
@@ -581,6 +612,30 @@ namespace Cassandra.Data.Linq
                         .Append(")");
                     return true;
                 }
+                case "StartsWith":
+                    Visit(node.Object);
+                    var startsWithArgument = node.Arguments[0];
+                    var startString = (string)Expression.Lambda(startsWithArgument).Compile().DynamicInvoke();
+                    var endString = startString + _utf8MaxValue;
+
+                    parameters.Add(startString);
+                    parameters.Add(endString);
+
+                    clause
+                        .Append(" ")
+                        .Append(CqlTags[ExpressionType.GreaterThanOrEqual])
+                        .Append(" ? ")
+                        .Append(CqlTags[ExpressionType.And])
+                        .Append(" ");
+
+                    Visit(node.Object);
+
+                    clause
+                        .Append(" ")
+                        .Append(CqlTags[ExpressionType.LessThan])
+                        .Append(" ?");
+                    
+                    return true;
                 case "CompareTo":
                     Visit(node.Object);
                     clause
@@ -619,8 +674,12 @@ namespace Cassandra.Data.Linq
             return false;
         }
 
-        private Expression EvaluateProjectionFunction(MethodCallExpression node)
+        private bool EvaluateOperatorMethod(MethodCallExpression node)
         {
+            if (node.Method.DeclaringType != typeof (CqlOperator))
+            {
+                return false;
+            }
             var column = _pocoData.GetColumnByMemberName(_currentBindingName.Get());
             object value = Expression.Lambda(node.Arguments[0]).Compile().DynamicInvoke();
             ExpressionType expressionType;
@@ -636,10 +695,10 @@ namespace Cassandra.Data.Linq
                     expressionType = ExpressionType.SubtractAssign;
                     break;
                 default:
-                    throw new ArgumentException(String.Format("Projection {0} not supported", node.Method.Name));
+                    return false;
             }
-            _projections.Add(Tuple.Create(column.ColumnName, value, expressionType));
-            return node;
+            _projections.Add(Tuple.Create(column, value, expressionType));
+            return true;
         }
 
         private static Expression DropNullableConversion(Expression node)
@@ -762,13 +821,12 @@ namespace Cassandra.Data.Linq
             }
             else if (_parsePhase.Get() == ParsePhase.SelectBinding)
             {
-                var val = Expression.Lambda(node).Compile().DynamicInvoke();
                 var column = _pocoData.GetColumnByMemberName(_currentBindingName.Get());
                 if (column == null)
                 {
                     throw new ArgumentException("Trying to select a column does it excluded in the mappings");
                 }
-                _projections.Add(Tuple.Create(column.ColumnName, val, ExpressionType.Assign));
+                AddProjection(node, column);
                 _selectFields.Add(column.ColumnName);
                 return node;
             }
@@ -804,7 +862,7 @@ namespace Cassandra.Data.Linq
                         }
                         expressionType = Convert.ToInt64(node.Value) > 0L ? ExpressionType.Increment : ExpressionType.Decrement;
                     }
-                    _projections.Add(Tuple.Create(column.ColumnName, node.Value, expressionType));
+                    _projections.Add(Tuple.Create(column, node.Value, expressionType));
                     _selectFields.Add(column.ColumnName);
                     return node;
                 }
@@ -886,33 +944,18 @@ namespace Cassandra.Data.Linq
                 }
                 case ParsePhase.SelectBinding:
                 {
-                    var columnName = _pocoData.GetColumnName(node.Member);
-                    if (columnName == null)
+                    PocoColumn column;
+                    if (node.Expression == null || node.Expression.NodeType != ExpressionType.Parameter)
                     {
-                        //Not valid: Trying to select fields that are not part of PocoType
-                        break;
-                    }
-                    if (node.Expression == null)
-                    {
-                        var value = Expression.Lambda(node).Compile().DynamicInvoke();
-                        columnName = _pocoData.GetColumnNameByMemberName(_currentBindingName.Get());
-                        _projections.Add(Tuple.Create(columnName, value, ExpressionType.Assign));
+                        column = _pocoData.GetColumnByMemberName(_currentBindingName.Get());
+                        AddProjection(node, column);
+                        _selectFields.Add(column.ColumnName);
                         return node;
                     }
-                    if (node.Expression.NodeType == ExpressionType.Constant || node.Expression.NodeType == ExpressionType.MemberAccess)
-                    {
-                        var value = Expression.Lambda(node).Compile().DynamicInvoke();
-                        _projections.Add(Tuple.Create(columnName, value, ExpressionType.Assign));
-                        _selectFields.Add(columnName);
-                        return node;
-                    }
-                    if (node.Expression.NodeType == ExpressionType.Parameter)
-                    {
-                        _projections.Add(Tuple.Create(columnName, (object)columnName, ExpressionType.Assign));
-                        _selectFields.Add(columnName);
-                        return node;
-                    }
-                    break;
+                    column = _pocoData.GetColumnByMemberName(node.Member.Name);
+                    _projections.Add(Tuple.Create(column, (object)column.ColumnName, ExpressionType.Assign));
+                    _selectFields.Add(column.ColumnName);
+                    return node;
                 }
                 case ParsePhase.OrderByDescending:
                 case ParsePhase.OrderBy:

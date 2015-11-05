@@ -15,6 +15,8 @@
 //
 
 ﻿using System;
+﻿using System.Collections.Generic;
+
 namespace Cassandra
 {
     /// <summary>
@@ -71,7 +73,29 @@ namespace Cassandra
         ///  safely ignored.</p>
         /// </summary>
         RoutingKey RoutingKey { get; }
+        /// <summary>
+        /// Gets the serial consistency level for the query.
+        /// <para>
+        /// The serial consistency level is only used by conditional updates (INSERT, UPDATE
+        /// and DELETE with an IF condition).
+        /// </para>
+        /// </summary>
         ConsistencyLevel SerialConsistencyLevel { get; }
+        bool SkipMetadata { get; }
+        /// <summary>
+        /// Gets custom payload for that will be included when executing this Statement.
+        /// </summary>
+        IDictionary<string, byte[]> OutgoingPayload { get; }
+        /// <summary>
+        /// Determines if this statement is idempotent, i.e. whether it can be applied multiple times without 
+        /// changing the result beyond the initial application.
+        /// <para>
+        /// Idempotence of the statement plays a role in <see cref="ISpeculativeExecutionPolicy"/>.
+        /// If a statement is <em>not idempotent</em>, the driver will not schedule speculative executions for it.
+        /// </para>
+        /// When the property is null, the driver will use the default value from the <see cref="QueryOptions.GetDefaultIdempotence()"/>.
+        /// </summary>
+        bool? IsIdempotent { get; }
         /// <summary>
         /// Sets the paging behavior.
         /// When set to true (default), the <see cref="RowSet"/> returned when executing this <c>IStatement</c> will automatically fetch the following result pages.
@@ -123,7 +147,7 @@ namespace Cassandra
         IStatement SetRetryPolicy(IRetryPolicy policy);
         /// <summary>
         /// Sets the serial consistency level for the query.
-        ///    The serial consistency level is only used by conditional updates (so INSERT, UPDATE
+        /// The serial consistency level is only used by conditional updates (so INSERT, UPDATE
         /// and DELETE with an IF condition). For those, the serial consistency level defines
         /// the consistency level of the serial phase (or "paxos" phase) while the
         /// normal consistency level defines the consistency for the "learn" phase, i.e. what
@@ -144,6 +168,19 @@ namespace Cassandra
         /// timestamp as default timestamp. Note that a timestamp in the query itself will still override this timestamp.
         /// </summary>
         IStatement SetTimestamp(DateTimeOffset value);
-        bool SkipMetadata { get; }
+        /// <summary>
+        /// Sets a custom outgoing payload for this statement.
+        /// Each time this statement is executed, this payload will be included in the request.
+        /// Once it is set using this method, the payload should not be modified.
+        /// </summary>
+        IStatement SetOutgoingPayload(IDictionary<string, byte[]> payload);
+        /// <summary>
+        /// Sets whether this statement is idempotent.
+        /// <para>
+        /// Idempotence of the statement plays a role in <see cref="ISpeculativeExecutionPolicy"/>.
+        /// If a statement is <em>not idempotent</em>, the driver will not schedule speculative executions for it.
+        /// </para>
+        /// </summary>
+        IStatement SetIdempotence(bool value);
     }
 }

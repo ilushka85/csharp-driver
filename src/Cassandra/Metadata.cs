@@ -20,6 +20,9 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Net;
 using System.Threading;
+using System.Threading.Tasks;
+using Cassandra.Requests;
+using Cassandra.Tasks;
 
 namespace Cassandra
 {
@@ -99,7 +102,7 @@ namespace Cassandra
             Hosts.SetDownIfExists(address);
         }
 
-        private void OnHostDown(Host h, DateTimeOffset nextUpTime)
+        private void OnHostDown(Host h, long reconnectionDelay)
         {
             if (HostsEvent != null)
             {
@@ -237,6 +240,34 @@ namespace Cassandra
         }
 
         /// <summary>
+        /// Gets the definition associated with a User Defined Function from Cassandra
+        /// </summary>
+        /// <returns>The function metadata or null if not found.</returns>
+        public FunctionMetadata GetFunction(string keyspace, string name, string[] signature)
+        {
+            KeyspaceMetadata ksMetadata;
+            if (!_keyspaces.TryGetValue(keyspace, out ksMetadata))
+            {
+                return null;
+            }
+            return ksMetadata.GetFunction(name, signature);
+        }
+
+        /// <summary>
+        /// Gets the definition associated with a aggregate from Cassandra
+        /// </summary>
+        /// <returns>The aggregate metadata or null if not found.</returns>
+        public AggregateMetadata GetAggregate(string keyspace, string name, string[] signature)
+        {
+            KeyspaceMetadata ksMetadata;
+            if (!_keyspaces.TryGetValue(keyspace, out ksMetadata))
+            {
+                return null;
+            }
+            return ksMetadata.GetAggregate(name, signature);
+        }
+
+        /// <summary>
         /// Updates the keyspace and token information
         /// </summary>
         public bool RefreshSchema(string keyspace = null, string table = null)
@@ -326,41 +357,70 @@ namespace Cassandra
             }
         }
 
+        internal void ClearFunction(string keyspaceName, string functionName, string[] signature)
+        {
+            KeyspaceMetadata ksMetadata;
+            if (_keyspaces.TryGetValue(keyspaceName, out ksMetadata))
+            {
+                ksMetadata.ClearFunction(functionName, signature);
+            }
+        }
+
+        internal void ClearAggregate(string keyspaceName, string aggregateName, string[] signature)
+        {
+            KeyspaceMetadata ksMetadata;
+            if (_keyspaces.TryGetValue(keyspaceName, out ksMetadata))
+            {
+                ksMetadata.ClearAggregate(aggregateName, signature);
+            }
+        }
+
         /// <summary>
         /// Waits until that the schema version in all nodes is the same or the waiting time passed.
+        /// This method blocks the calling thread.
         /// </summary>
-        internal void WaitForSchemaAgreement()
+        internal void WaitForSchemaAgreement(Connection connection)
         {
             if (Hosts.Count == 1)
             {
+                //If there is just one node, the schema is up to date in all nodes :)
                 return;
             }
             var start = DateTime.Now;
             var waitSeconds = _config.ProtocolOptions.MaxSchemaAgreementWaitSeconds;
-            Logger.Verbose("Waiting for schema agreement");
+            Logger.Info("Waiting for schema agreement");
             try
             {
-                var versions = new HashSet<Guid>();
+                var totalVersions = 0;
                 while (DateTime.Now.Subtract(start).TotalSeconds < waitSeconds)
                 {
-                    versions.Clear();
-                    versions.Add(ControlConnection.Query(SelectSchemaVersionLocal, true).First().GetValue<Guid>("schema_version"));
-                    var peerVersions = ControlConnection.Query(SelectSchemaVersionPeers, true).Select(r => r.GetValue<Guid>("schema_version"));
+                    var schemaVersionLocalQuery = new QueryRequest(connection.ProtocolVersion, SelectSchemaVersionLocal, false, QueryProtocolOptions.Default);
+                    var schemaVersionPeersQuery = new QueryRequest(connection.ProtocolVersion, SelectSchemaVersionPeers, false, QueryProtocolOptions.Default);
+                    var queries = new [] { connection.Send(schemaVersionLocalQuery), connection.Send(schemaVersionPeersQuery) };
+                    // ReSharper disable once CoVariantArrayConversion
+                    Task.WaitAll(queries, _config.ClientOptions.QueryAbortTimeout);
+                    var versions = new HashSet<Guid>
+                    {
+                        ControlConnection.GetRowSet(queries[0].Result).First().GetValue<Guid>("schema_version")
+                    };
+                    var peerVersions = ControlConnection.GetRowSet(queries[1].Result).Select(r => r.GetValue<Guid>("schema_version"));
                     foreach (var v in peerVersions)
                     {
                         versions.Add(v);
                     }
+                    totalVersions = versions.Count;
                     if (versions.Count == 1)
                     {
                         return;
                     }
                     Thread.Sleep(500);
                 }
-                Logger.Info(String.Format("Waited for schema agreement, still {0} schema versions in the cluster.", versions.Count));
+                Logger.Info(String.Format("Waited for schema agreement, still {0} schema versions in the cluster.", totalVersions));
             }
             catch (Exception ex)
             {
-                Logger.Error(ex);
+                //Exceptions are not fatal
+                Logger.Error("There was an exception while trying to retrieve schema versions", ex);
             }
         }
     }

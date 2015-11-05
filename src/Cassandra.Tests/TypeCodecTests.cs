@@ -27,6 +27,7 @@ namespace Cassandra.Tests
     public class TypeCodecTests
     {
         private readonly byte[] _protocolVersions = new byte[] {1, 2, 3};
+        private static readonly MapColumnInfo MapColumnInfoStringString = new MapColumnInfo() { KeyTypeCode = ColumnTypeCode.Text, ValueTypeCode = ColumnTypeCode.Text };
 
         [Test]
         public void EncodeDecodeSingleValuesTest()
@@ -38,7 +39,14 @@ namespace Cassandra.Tests
                 new Tuple<object, DecodeHandler, EncodeHandler>(1234, TypeCodec.DecodeInt, TypeCodec.EncodeInt),
                 new Tuple<object, DecodeHandler, EncodeHandler>((long)3129, TypeCodec.DecodeBigint, TypeCodec.EncodeBigint),
                 new Tuple<object, DecodeHandler, EncodeHandler>(1234F, TypeCodec.DecodeFloat, TypeCodec.EncodeFloat),
+
                 new Tuple<object, DecodeHandler, EncodeHandler>(1.14D, TypeCodec.DecodeDouble, TypeCodec.EncodeDouble),
+                new Tuple<object, DecodeHandler, EncodeHandler>(double.MinValue, TypeCodec.DecodeDouble, TypeCodec.EncodeDouble),
+                new Tuple<object, DecodeHandler, EncodeHandler>(-1.14, TypeCodec.DecodeDouble, TypeCodec.EncodeDouble),
+                new Tuple<object, DecodeHandler, EncodeHandler>(0d, TypeCodec.DecodeDouble, TypeCodec.EncodeDouble),
+                new Tuple<object, DecodeHandler, EncodeHandler>(double.MaxValue, TypeCodec.DecodeDouble, TypeCodec.EncodeDouble),
+                new Tuple<object, DecodeHandler, EncodeHandler>(double.NaN, TypeCodec.DecodeDouble, TypeCodec.EncodeDouble),
+
                 new Tuple<object, DecodeHandler, EncodeHandler>(1.01M, TypeCodec.DecodeDecimal, TypeCodec.EncodeDecimal),
                 
                 new Tuple<object, DecodeHandler, EncodeHandler>(72.727272727272727272727272727M, TypeCodec.DecodeDecimal, TypeCodec.EncodeDecimal),
@@ -51,14 +59,12 @@ namespace Cassandra.Tests
                 new Tuple<object, DecodeHandler, EncodeHandler>(Decimal.MaxValue, TypeCodec.DecodeDecimal, TypeCodec.EncodeDecimal),
                 new Tuple<object, DecodeHandler, EncodeHandler>(Decimal.MinValue, TypeCodec.DecodeDecimal, TypeCodec.EncodeDecimal),
                 
-                new Tuple<object, DecodeHandler, EncodeHandler>(new DateTime(1983, 2, 24), TypeCodec.DecodeTimestamp, TypeCodec.EncodeTimestamp),
                 new Tuple<object, DecodeHandler, EncodeHandler>(new DateTimeOffset(new DateTime(2015, 10, 21)), TypeCodec.DecodeTimestamp, TypeCodec.EncodeTimestamp),
                 new Tuple<object, DecodeHandler, EncodeHandler>(new IPAddress(new byte[] { 1, 1, 5, 255}), TypeCodec.DecodeInet, TypeCodec.EncodeInet),
                 new Tuple<object, DecodeHandler, EncodeHandler>(true, TypeCodec.DecodeBoolean, TypeCodec.EncodeBoolean),
                 new Tuple<object, DecodeHandler, EncodeHandler>(new byte[] {16}, TypeCodec.DecodeBlob, TypeCodec.EncodeBlob),
                 new Tuple<object, DecodeHandler, EncodeHandler>(Guid.NewGuid(), TypeCodec.DecodeUuid, TypeCodec.EncodeUuid),
                 new Tuple<object, DecodeHandler, EncodeHandler>(Guid.NewGuid(), TypeCodec.DecodeTimeuuid, TypeCodec.EncodeTimeuuid),
-                new Tuple<object, DecodeHandler, EncodeHandler>(TimeUuid.NewId(), TypeCodec.DecodeTimeuuid, TypeCodec.EncodeTimeuuid)
             };
             foreach (var version in _protocolVersions)
             {
@@ -100,7 +106,23 @@ namespace Cassandra.Tests
                 foreach (object[] value in initialValues)
                 {
                     byte[] encoded = TypeCodec.Encode(version, value[0]);
-                    Assert.AreEqual(value[0], TypeCodec.Decode(version, encoded, (ColumnTypeCode)value[1], null, value[0].GetType()));
+                    object decoded = TypeCodec.Decode(version, encoded, (ColumnTypeCode) value[1], null);
+                    if (decoded.GetType() != value[0].GetType())
+                    {
+                        if (decoded is IConvertible)
+                        {
+                            decoded = Convert.ChangeType(decoded, value[0].GetType());   
+                        }
+                        else if (value[0] is DateTime)
+                        {
+                            decoded = ((DateTimeOffset)decoded).DateTime;
+                        }
+                        else if (value[0] is TimeUuid)
+                        {
+                            decoded = (TimeUuid) (Guid) decoded;
+                        }
+                    }
+                    Assert.AreEqual(value[0], decoded);
                 }
             }
         }
@@ -160,7 +182,7 @@ namespace Cassandra.Tests
                     var valueToEncode = (IEnumerable)value[0];
                     var encoded = TypeCodec.Encode(version, valueToEncode);
                     var decoded = (IEnumerable)TypeCodec.Decode(version, encoded, (ColumnTypeCode)value[1], (IColumnInfo)value[2], originalType);
-                    Assert.IsInstanceOf(originalType, decoded);
+                    Assert.IsInstanceOf<Array>(decoded);
                     CollectionAssert.AreEqual(valueToEncode, decoded);
                 }
             }
@@ -189,9 +211,9 @@ namespace Cassandra.Tests
         {
             var initialValues = new object[]
             {
-                new object[] {new SortedDictionary<string, string>(), ColumnTypeCode.Map, new MapColumnInfo() {KeyTypeCode = ColumnTypeCode.Text, ValueTypeCode = ColumnTypeCode.Text}},
-                new object[] {new SortedDictionary<string, string>{{"key100","value100"}}, ColumnTypeCode.Map, new MapColumnInfo() {KeyTypeCode = ColumnTypeCode.Text, ValueTypeCode = ColumnTypeCode.Text}},
-                new object[] {new SortedDictionary<string, string>{{"key1","value1"}, {"key2","value2"}}, ColumnTypeCode.Map, new MapColumnInfo() {KeyTypeCode = ColumnTypeCode.Text, ValueTypeCode = ColumnTypeCode.Text}},
+                new object[] {new SortedDictionary<string, string>(), ColumnTypeCode.Map, MapColumnInfoStringString},
+                new object[] {new SortedDictionary<string, string>{{"key100","value100"}}, ColumnTypeCode.Map, MapColumnInfoStringString},
+                new object[] {new SortedDictionary<string, string>{{"key1","value1"}, {"key2","value2"}}, ColumnTypeCode.Map, MapColumnInfoStringString},
                 new object[] {new SortedDictionary<string, int>{{"key1", 1}, {"key2", 2}}, ColumnTypeCode.Map, new MapColumnInfo() {KeyTypeCode = ColumnTypeCode.Text, ValueTypeCode = ColumnTypeCode.Int}},
                 new object[] {new SortedDictionary<Guid, string>{{Guid.NewGuid(),"value1"}, {Guid.NewGuid(),"value2"}}, ColumnTypeCode.Map, new MapColumnInfo() {KeyTypeCode = ColumnTypeCode.Uuid, ValueTypeCode = ColumnTypeCode.Text}},
             };
@@ -289,10 +311,18 @@ namespace Cassandra.Tests
             Assert.AreEqual(ColumnTypeCode.Timeuuid, dataType.TypeCode);
             dataType = TypeCodec.ParseDataType("org.apache.cassandra.db.marshal.AsciiType");
             Assert.AreEqual(ColumnTypeCode.Ascii, dataType.TypeCode);
+            dataType = TypeCodec.ParseDataType("org.apache.cassandra.db.marshal.SimpleDateType");
+            Assert.AreEqual(ColumnTypeCode.Date, dataType.TypeCode);
+            dataType = TypeCodec.ParseDataType("org.apache.cassandra.db.marshal.TimeType");
+            Assert.AreEqual(ColumnTypeCode.Time, dataType.TypeCode);
+            dataType = TypeCodec.ParseDataType("org.apache.cassandra.db.marshal.ShortType");
+            Assert.AreEqual(ColumnTypeCode.SmallInt, dataType.TypeCode);
+            dataType = TypeCodec.ParseDataType("org.apache.cassandra.db.marshal.ByteType");
+            Assert.AreEqual(ColumnTypeCode.TinyInt, dataType.TypeCode);
         }
 
         [Test]
-        public void ParseDataTypeNameMultipleTest()
+        public void Parse_DataType_Name_Multiple_Test()
         {
             var dataType = TypeCodec.ParseDataType("org.apache.cassandra.db.marshal.ListType(org.apache.cassandra.db.marshal.Int32Type)");
             Assert.AreEqual(ColumnTypeCode.List, dataType.TypeCode);
@@ -317,7 +347,7 @@ namespace Cassandra.Tests
         }
 
         [Test]
-        public void ParseDataTypeNameFrozenTest()
+        public void Parse_DataType_Name_Frozen_Test()
         {
             var dataType = TypeCodec.ParseDataType("org.apache.cassandra.db.marshal.FrozenType(org.apache.cassandra.db.marshal.ListType(org.apache.cassandra.db.marshal.TimeUUIDType))");
             Assert.AreEqual(ColumnTypeCode.List, dataType.TypeCode);
@@ -334,7 +364,7 @@ namespace Cassandra.Tests
         }
 
         [Test]
-        public void ParseDataTypeNameUdtTest()
+        public void Parse_DataType_Name_Udt_Test()
         {
             var typeText =
                 "org.apache.cassandra.db.marshal.UserType(" +
@@ -354,7 +384,7 @@ namespace Cassandra.Tests
         }
 
         [Test]
-        public void ParseDataTypeNameUdtNestedTest()
+        public void Parse_DataType_Name_Udt_Nested_Test()
         {
             var typeText =
                 "org.apache.cassandra.db.marshal.UserType(" +
@@ -390,12 +420,12 @@ namespace Cassandra.Tests
         }
 
         [Test]
-        public void EncodeDecodeNestedList()
+        public void Encode_Decode_Nested_List()
         {
             var initialValues = new object[]
             {
-                new object[] {new List<IEnumerable<int>>{new List<int>(new [] {1, 2, 1000})}, ColumnTypeCode.List, GetNestedListColumnInfo(1, ColumnTypeCode.Int)},
-                new object[] {new List<IEnumerable<IEnumerable<int>>>{new List<IEnumerable<int>> {new List<int>(new [] {1, 2, 1000})}}, ColumnTypeCode.List, GetNestedListColumnInfo(2, ColumnTypeCode.Int)}
+                new object[] {new IEnumerable<int>[]{new List<int>(new [] {1, 2, 1000})}, ColumnTypeCode.List, GetNestedListColumnInfo(1, ColumnTypeCode.Int)},
+                new object[] {new IEnumerable<IEnumerable<int>>[]{new List<IEnumerable<int>> {new List<int>(new [] {1, 2, 1000})}}, ColumnTypeCode.List, GetNestedListColumnInfo(2, ColumnTypeCode.Int)}
             };
             foreach (var version in _protocolVersions)
             {
@@ -412,7 +442,7 @@ namespace Cassandra.Tests
         }
 
         [Test]
-        public void EncodeDecodeNestedSet()
+        public void Encode_Decode_Nested_Set()
         {
             var initialValues = new object[]
             {
@@ -434,7 +464,7 @@ namespace Cassandra.Tests
         }
 
         [Test]
-        public void EncodeDecodeNestedMap()
+        public void Encode_Decode_Nested_Map()
         {
             var initialValues = new object[]
             {
@@ -465,6 +495,107 @@ namespace Cassandra.Tests
                     Assert.IsInstanceOf(originalType, decoded);
                     CollectionAssert.AreEqual(valueToEncode, decoded);
                 }
+            }
+        }
+
+        [Test]
+        public void Encode_Decode_TinyInt()
+        {
+            var values = new[]
+            {
+                Tuple.Create<sbyte, byte>(-1, 0xff),
+                Tuple.Create<sbyte, byte>(-2, 0xfe),
+                Tuple.Create<sbyte, byte>(0, 0),
+                Tuple.Create<sbyte, byte>(1, 1),
+                Tuple.Create<sbyte, byte>(2, 2),
+                Tuple.Create<sbyte, byte>(127, 127)
+            };
+            foreach (var v in values)
+            {
+                var encoded = TypeCodec.EncodeSByte(4, null, v.Item1);
+                CollectionAssert.AreEqual(encoded, new[] { v.Item2 });
+                var decoded = (sbyte)TypeCodec.DecodeSByte(4, null, encoded, null);
+                Assert.AreEqual(v.Item1, decoded);
+            }
+        }
+
+        [Test]
+        public void Encode_Decode_Date()
+        {
+            var values = new[]
+            {
+                new LocalDate(2010, 4, 29),
+                new LocalDate(2005, 8, 5),
+                new LocalDate(0, 3, 12),
+                new LocalDate(-10, 2, 4),
+                new LocalDate(5881580, 7, 11),
+                new LocalDate(-5877641, 6, 23)
+            };
+            foreach (var v in values)
+            {
+                var encoded = TypeCodec.EncodeDate(4, null, v);
+                var decoded = (LocalDate)TypeCodec.DecodeDate(4, null, encoded, null);
+                Assert.AreEqual(v, decoded);
+            }
+        }
+
+        [Test]
+        public void Encode_Decode_SmallInt()
+        {
+            for (var i = Int16.MinValue; ; i++ )
+            {
+                var encoded = TypeCodec.EncodeShort(4, null, i);
+                var decoded = (short)TypeCodec.DecodeShort(4, null, encoded, null);
+                Assert.AreEqual(i, decoded);
+                if (i == Int16.MaxValue)
+                {
+                    break;
+                }
+            }
+        }
+
+        [Test]
+        public void Encode_Map_With_Null_Value_Throws_ArgumentNullException()
+        {
+            var value = new Dictionary<string, string>
+            {
+                {"k1", "value1"},
+                {"k2", null}
+            };
+            var ex = Assert.Throws<ArgumentNullException>(() => TypeCodec.EncodeMap(2, MapColumnInfoStringString, value));
+            StringAssert.Contains("collections", ex.Message);
+        }
+
+        [Test]
+        public void Encode_List_With_Null_Value_Throws_ArgumentNullException()
+        {
+            var value = new List<string>
+            {
+                "one",
+                null,
+                "two"
+            };
+            var ex = Assert.Throws<ArgumentNullException>(() => TypeCodec.EncodeList(2, new ListColumnInfo { ValueTypeCode = ColumnTypeCode.Text}, value));
+            StringAssert.Contains("collections", ex.Message);
+        }
+
+        [Test]
+        public void Encode_Decode_With_Binary_Representation()
+        {
+            var values = new[]
+            {
+                Tuple.Create<object, byte[], EncodeHandler, DecodeHandler>(1D, new byte[] {0x3f, 0xf0, 0, 0, 0, 0, 0, 0}, TypeCodec.EncodeDouble, TypeCodec.DecodeDouble),
+                Tuple.Create<object, byte[], EncodeHandler, DecodeHandler>(2D, new byte[] {0x40, 0, 0, 0, 0, 0, 0, 0}, TypeCodec.EncodeDouble, TypeCodec.DecodeDouble),
+                Tuple.Create<object, byte[], EncodeHandler, DecodeHandler>(2.2D, new byte[] {0x40, 1, 0x99, 0x99, 0x99, 0x99, 0x99, 0x9a}, TypeCodec.EncodeDouble, TypeCodec.DecodeDouble),
+                Tuple.Create<object, byte[], EncodeHandler, DecodeHandler>(-1D, new byte[] {0xbf, 0xf0, 0, 0, 0, 0, 0, 0}, TypeCodec.EncodeDouble, TypeCodec.DecodeDouble),
+                Tuple.Create<object, byte[], EncodeHandler, DecodeHandler>(-1F, new byte[] {0xbf, 0x80, 0, 0}, TypeCodec.EncodeFloat, TypeCodec.DecodeFloat),
+                Tuple.Create<object, byte[], EncodeHandler, DecodeHandler>(1.3329F, new byte[] {0x3f, 0xaa, 0x9c, 0x78}, TypeCodec.EncodeFloat, TypeCodec.DecodeFloat)
+            };
+            foreach (var val in values)
+            {
+                var encoded = val.Item3(4, null, val.Item1);
+                CollectionAssert.AreEqual(val.Item2, encoded);
+                Assert.AreEqual(val.Item1, val.Item4(4, null, encoded, null));
             }
         }
 

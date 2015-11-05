@@ -14,11 +14,16 @@
 //   limitations under the License.
 //
 
-namespace Cassandra
+using System.Collections.Generic;
+using System.IO;
+
+namespace Cassandra.Requests
 {
     internal class PrepareRequest : IRequest
     {
         public const byte OpCode = 0x09;
+        private IDictionary<string, byte[]> _payload;
+        private FrameHeader.HeaderFlag _headerFlags;
         /// <summary>
         /// The CQL string to be prepared
         /// </summary>
@@ -26,18 +31,35 @@ namespace Cassandra
 
         public int ProtocolVersion { get; set; }
 
+        public IDictionary<string, byte[]> Payload
+        {
+            get { return _payload; }
+            set
+            {
+                if (value != null)
+                {
+                    _headerFlags |= FrameHeader.HeaderFlag.CustomPayload;
+                }
+                _payload = value;
+            }
+        }
+
         public PrepareRequest(int protocolVersion, string cqlQuery)
         {
             ProtocolVersion = protocolVersion;
             Query = cqlQuery;
         }
 
-        public RequestFrame GetFrame(short streamId)
+        public int WriteFrame(short streamId, MemoryStream stream)
         {
-            var wb = new BEBinaryWriter();
-            wb.WriteFrameHeader((byte)ProtocolVersion, 0x00, streamId, OpCode);
+            var wb = new FrameWriter(stream);
+            wb.WriteFrameHeader((byte)ProtocolVersion, (byte)_headerFlags, streamId, OpCode);
+            if (Payload != null)
+            {
+                wb.WriteBytesMap(Payload);
+            }
             wb.WriteLongString(Query);
-            return wb.GetFrame();
+            return wb.Close();
         }
     }
 }

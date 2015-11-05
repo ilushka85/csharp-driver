@@ -11,24 +11,18 @@ using NUnit.Framework;
 namespace Cassandra.IntegrationTests.Mapping.Tests
 {
     [Category("short")]
-    public class Counter : TestGlobals
+    public class Counter : SharedClusterTest
     {
         private ISession _session;
         string _uniqueKsName;
 
-        [SetUp]
-        public void SetupTest()
+        protected override void TestFixtureSetUp()
         {
-            _session = TestClusterManager.GetTestCluster(1).Session;
+            base.TestFixtureSetUp();
+            _session = Session;
             _uniqueKsName = TestUtils.GetUniqueKeyspaceName();
             _session.CreateKeyspace(_uniqueKsName);
             _session.ChangeKeyspace(_uniqueKsName);
-        }
-
-        [TearDown]
-        public void TeardownTest()
-        {
-            TestUtils.TryToDeleteKeyspace(_session, _uniqueKsName);
         }
 
         [Test, Category("short")]
@@ -36,7 +30,7 @@ namespace Cassandra.IntegrationTests.Mapping.Tests
         {
             var config = new AttributeBasedTypeDefinition(typeof(PocoWithCounterAttribute));
             var table = new Table<PocoWithCounterAttribute>(_session, new MappingConfiguration().Define(config));
-            table.Create();
+            table.CreateIfNotExists();
             var cqlClient = new Mapper(_session, new MappingConfiguration().Define(config));
 
             List<PocoWithCounterAttribute> counterPocos = new List<PocoWithCounterAttribute>();
@@ -79,56 +73,6 @@ namespace Cassandra.IntegrationTests.Mapping.Tests
         }
 
         /// <summary>
-        /// Do many counter updates in parallel
-        /// </summary>
-        [Test, Category("long")]
-        public void Counter_LinqAttributes_Parallel()
-        {
-            var config = new Cassandra.Mapping.Attributes.AttributeBasedTypeDefinition(typeof(PocoWithCounterAttribute));
-            var table = new Table<PocoWithCounterAttribute>(_session, new MappingConfiguration().Define(config));
-            table.Create();
-            var cqlClient = new Mapper(_session, new MappingConfiguration().Define(config));
-
-            List<PocoWithCounterAttribute> counterPocos = new List<PocoWithCounterAttribute>();
-            for (int i = 0; i < 100; i++)
-            {
-                counterPocos.Add(
-                    new PocoWithCounterAttribute()
-                    {
-                        KeyPart1 = Guid.NewGuid(),
-                        KeyPart2 = (decimal)123,
-                    });
-            }
-
-            int counterIncrements = 2000;
-            string updateStr = String.Format("UPDATE \"{0}\" SET \"{1}\"=\"{1}\" + 1 WHERE \"{2}\"=? and \"{3}\"=?", table.Name.ToLower(), "counter", "keypart1", "keypart2");
-            var updateSession = _session.Prepare(updateStr);
-            Parallel.ForEach(counterPocos, pocoWithCounter =>
-            {
-                var boundStatement = updateSession.Bind(new object[] {pocoWithCounter.KeyPart1, pocoWithCounter.KeyPart2});
-                for (int j = 0; j < counterIncrements; j++)
-                    _session.Execute(boundStatement);
-                pocoWithCounter.Counter += counterIncrements;
-            });
-
-            List<PocoWithCounterAttribute> countersQueried = cqlClient.Fetch<PocoWithCounterAttribute>().ToList();
-            foreach (PocoWithCounterAttribute pocoWithCounterExpected in counterPocos)
-            {
-                bool counterFound = false;
-                foreach (PocoWithCounterAttribute pocoWithCounterActual in countersQueried)
-                {
-                    if (pocoWithCounterExpected.KeyPart1 == pocoWithCounterActual.KeyPart1)
-                    {
-                        Assert.AreEqual(pocoWithCounterExpected.KeyPart2, pocoWithCounterExpected.KeyPart2);
-                        Assert.AreEqual(pocoWithCounterExpected.Counter, pocoWithCounterExpected.Counter);
-                        counterFound = true;
-                    }
-                }
-                Assert.IsTrue(counterFound, "Counter with first key part: " + pocoWithCounterExpected.KeyPart1 + " was not found!");
-            }
-        }
-
-        /// <summary>
         /// Validate expected error message when attempting to insert a row that contains a counter
         /// </summary>
         [Test, Category("short")]
@@ -145,8 +89,8 @@ namespace Cassandra.IntegrationTests.Mapping.Tests
 
             // Validate Error Message
             var e = Assert.Throws<InvalidQueryException>(() => table.Insert(pocoAndLinqAttributesPocos).Execute());
-            string expectedErrMsg = "INSERT statement are not allowed on counter tables, use UPDATE instead";
-            Assert.AreEqual(expectedErrMsg, e.Message);
+            string expectedErrMsg = "INSERT statement(s)? are not allowed on counter tables, use UPDATE instead";
+            StringAssert.IsMatch(expectedErrMsg, e.Message);
         }
 
 

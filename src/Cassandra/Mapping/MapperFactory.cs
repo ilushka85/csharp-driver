@@ -183,30 +183,10 @@ namespace Cassandra.Mapping
 
             CqlColumn dbColumn = rows.Columns[0];
 
-            LabelTarget returnTarget = Expression.Label(pocoData.PocoType);
-
             // Get an expression for getting the value of the single column as TPoco (and returning it)
-            Expression getColumnValue = Expression.Return(returnTarget, GetExpressionToGetColumnValueFromRow(row, dbColumn, pocoData.PocoType));
+            Expression getColumnOrDefault = GetExpressionToGetColumnValueFromRow(row, dbColumn, pocoData.PocoType);
 
-            // If it is null, try to provide an empty collection for collection types, otherwise do nothing (empty expression)
-            Expression ifIsNull = Expression.Empty();
-
-            Expression createEmptyCollection;
-            if (TryGetCreateEmptyCollectionExpression(dbColumn, pocoData.PocoType, out createEmptyCollection))
-                ifIsNull = Expression.Return(returnTarget, createEmptyCollection);
-
-            // if (row.IsNull(0) == false)
-            //     return ... getColumnValue ...
-            // else
-            //     return ... empty collection or default(TPoco) ...
-            var methodBody = Expression.Block(
-                Expression.IfThenElse(
-                    Expression.IsFalse(Expression.Call(row, IsNullMethod, Expression.Constant(0, IntType))), 
-                    getColumnValue, 
-                    ifIsNull),
-                Expression.Label(returnTarget, Expression.Default(pocoData.PocoType)));
-
-            return Expression.Lambda<Func<Row, T>>(methodBody, row).Compile();
+            return Expression.Lambda<Func<Row, T>>(getColumnOrDefault, row).Compile();
         }
 
         /// <summary>
@@ -261,29 +241,9 @@ namespace Cassandra.Mapping
 
                 // Figure out if we're going to need to do any casting/conversion when we call Row.GetValue<T>(columnIndex)
                 Expression getColumnValue = GetExpressionToGetColumnValueFromRow(row, dbColumn, pocoColumn.MemberInfoType);
-                
-                // poco.SomeFieldOrProp = ... getColumnValue call ...
-                BinaryExpression ifRowIsNotNull = Expression.Assign(Expression.MakeMemberAccess(poco, pocoColumn.MemberInfo), getColumnValue);
+                BinaryExpression assignValue = Expression.Assign(Expression.MakeMemberAccess(poco, pocoColumn.MemberInfo), getColumnValue);
 
-                // Start with an expression that does nothing if the row is null
-                Expression ifRowIsNull = Expression.Empty();
-
-                // Cassandra will return null for empty collections, so make an effort to populate collection properties on the POCO with
-                // empty collections instead of null in those cases
-                Expression createEmptyCollection;
-                if (TryGetCreateEmptyCollectionExpression(dbColumn, pocoColumn.MemberInfoType, out createEmptyCollection))
-                {
-                    // poco.SomeFieldOrProp = ... createEmptyCollection ...
-                    ifRowIsNull = Expression.Assign(Expression.MakeMemberAccess(poco, pocoColumn.MemberInfo), createEmptyCollection);
-                }
-                
-                // if (row.IsNull(columnIndex) == false)
-                //     ... ifRowIsNotNull ...
-                // else
-                //     ... ifRowIsNull ...
-                var columnIndex = Expression.Constant(dbColumn.Index, IntType);
-                methodBodyExpressions.Add(Expression.IfThenElse(Expression.IsFalse(Expression.Call(row, IsNullMethod, columnIndex)), ifRowIsNotNull,
-                                                                ifRowIsNull));
+                methodBodyExpressions.Add(assignValue);
             }
 
             // The last expression in the method body is the return value, so put our new POCO at the end
@@ -321,6 +281,23 @@ namespace Cassandra.Mapping
             return Expression.Call(converter.Target == null ? null : Expression.Constant(converter.Target), converter.Method, getValueFromPoco);
         }
 
+        public object AdaptValue(PocoData pocoData, PocoColumn column, object value)
+        {
+            if (column.MemberInfoType == column.ColumnType)
+            {
+                return value;
+            }
+            // See if there is a converter available for between the two types
+            var converter =  _typeConverter.GetToDbConverter(column.MemberInfoType, column.ColumnType);
+            if (converter == null)
+            {
+                // No converter available, at least try a cast:
+                // (TColumn) poco.SomeFieldOrProp
+                return Convert.ChangeType(value, column.ColumnType);
+            }
+            return converter.DynamicInvoke(value);
+        }
+
         /// <summary>
         /// Gets an Expression that represents calling Row.GetValue&lt;T&gt;(columnIndex) and applying any type conversion necessary to
         /// convert it to the destination type on the POCO.
@@ -338,6 +315,7 @@ namespace Cassandra.Mapping
             }
 
             // Check for a converter
+            Expression convertedValue;
             Delegate converter = _typeConverter.GetFromDbConverter(dbColumn.Type, pocoDestType);
             if (converter == null)
             {
@@ -345,7 +323,7 @@ namespace Cassandra.Mapping
                 //     (TFieldOrProp) row.GetValue<T>(columnIndex);
                 try
                 {
-                    return Expression.Convert(getValueT, pocoDestType);
+                    convertedValue = Expression.Convert(getValueT, pocoDestType);
                 }
                 catch (InvalidOperationException ex)
                 {
@@ -353,10 +331,22 @@ namespace Cassandra.Mapping
                     throw new InvalidTypeException(message, ex);
                 }
             }
+            else
+            {
+                // Invoke the converter function on getValueT (taking into account whether it's a static method):
+                //     converter(row.GetValue<T>(columnIndex));
+                convertedValue = Expression.Call(converter.Target == null ? null : Expression.Constant(converter.Target), converter.Method, getValueT);
+            }
+            Expression defaultValue;
+            // Cassandra will return null for empty collections, so make an effort to populate collection properties on the POCO with
+            // empty collections instead of null in those cases
+            if (!TryGetCreateEmptyCollectionExpression(dbColumn, pocoDestType, out defaultValue))
+            {
+                // poco.SomeFieldOrProp = ... createEmptyCollection ...
+                defaultValue = Expression.Default(pocoDestType);
+            }
 
-            // Invoke the converter function on getValueT (taking into account whether it's a static method):
-            //     converter(row.GetValue<T>(columnIndex));
-            return Expression.Call(converter.Target == null ? null : Expression.Constant(converter.Target), converter.Method, getValueT);
+            return Expression.Condition(Expression.Call(row, IsNullMethod, columnIndex), defaultValue, convertedValue);
         }
 
         /// <summary>

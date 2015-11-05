@@ -37,10 +37,21 @@ namespace Cassandra
         /// </summary>
         public const int DefaultPageSize = 5000;
 
-        private volatile ConsistencyLevel _consistency = DefaultConsistencyLevel;
-        private volatile int _pageSize = DefaultPageSize;
-        private volatile ConsistencyLevel _serialConsistency = DefaultSerialConsistencyLevel;
+        /// <summary>
+        /// Default value for <see cref="RetryOnTimeout"/>
+        /// </summary>
+        public const bool DefaultRetryOnTimeout = true;
 
+        private ConsistencyLevel _consistency = DefaultConsistencyLevel;
+        private int _pageSize = DefaultPageSize;
+        private ConsistencyLevel _serialConsistency = DefaultSerialConsistencyLevel;
+        private bool _retryOnTimeout = DefaultRetryOnTimeout;
+        private bool _defaultIdempotence = false;
+
+        /// <summary>
+        /// Gets a value that determines if the client should retry when it didn't hear back from a host within <see cref="SocketOptions.ReadTimeoutMillis"/>.
+        /// </summary>
+        public bool RetryOnTimeout { get { return _retryOnTimeout; }}
 
         /// <summary>
         /// Sets the default consistency level to use for queries.
@@ -102,11 +113,21 @@ namespace Cassandra
         public QueryOptions SetPageSize(int pageSize)
         {
             if (pageSize <= 0)
+            {
                 throw new ArgumentException("Invalid pageSize, should be > 0, got " + pageSize);
-            this._pageSize = pageSize;
+            }
+            _pageSize = pageSize;
             return this;
         }
 
+        /// <summary>
+        /// Determines if the client should retry when it didn't hear back from a host within <see cref="SocketOptions.ReadTimeoutMillis"/>.
+        /// </summary>
+        public QueryOptions SetRetryOnTimeout(bool retry)
+        {
+            _retryOnTimeout = retry;
+            return this;
+        }
 
         /// <summary>
         /// The default page size used by queries.
@@ -115,6 +136,22 @@ namespace Cassandra
         public int GetPageSize()
         {
             return _pageSize;
+        }
+
+        /// <summary>
+        /// Sets the default idempotence for all queries.
+        /// </summary>
+        public QueryOptions SetDefaultIdempotence(bool idempotence)
+        {
+            _defaultIdempotence = idempotence;
+            return this;
+        }
+
+        public bool GetDefaultIdempotence()
+        {
+            //A get method is not very C#-like, a get property should be more appropriate
+            //But it's to be consistent with the rest of the class
+            return _defaultIdempotence;
         }
     }
 }

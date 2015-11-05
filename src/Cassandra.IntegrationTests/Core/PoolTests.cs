@@ -54,7 +54,7 @@ namespace Cassandra.IntegrationTests.Core
         {
             var policy = new ConstantReconnectionPolicy(5000);
 
-            ITestCluster nonShareableTestCluster = TestClusterManager.GetNonShareableTestCluster(2);
+            var nonShareableTestCluster = TestClusterManager.GetNonShareableTestCluster(2, 1, true, false);
             nonShareableTestCluster.Builder = new Builder().WithReconnectionPolicy(policy);
             nonShareableTestCluster.InitClient(); // this will replace the existing session using the newly assigned Builder instance
             var session = (Session)nonShareableTestCluster.Session;
@@ -75,7 +75,7 @@ namespace Cassandra.IntegrationTests.Core
                 hosts.Add(rs.Info.QueriedHost);
             }
 
-            var pool = session.GetConnectionPool(TestHelper.CreateHost(nonShareableTestCluster.InitialContactPoint), HostDistance.Local);
+            var pool = session.GetOrCreateConnectionPool(TestHelper.CreateHost(nonShareableTestCluster.InitialContactPoint), HostDistance.Local);
             var connections = pool.OpenConnections.ToArray();
             var expectedCoreConnections = nonShareableTestCluster.Cluster.Configuration
                 .GetPoolingOptions(connections.First().ProtocolVersion)
@@ -94,54 +94,55 @@ namespace Cassandra.IntegrationTests.Core
             parallelOptions.TaskScheduler = new ThreadPerTaskScheduler();
             parallelOptions.MaxDegreeOfParallelism = 100;
 
-            var policy = new ConstantReconnectionPolicy(Int32.MaxValue);
-            ITestCluster nonShareableTestCluster = TestClusterManager.GetNonShareableTestCluster(4);
-            nonShareableTestCluster.Builder = new Builder().WithReconnectionPolicy(policy);
-            nonShareableTestCluster.InitClient(); // this will replace the existing session using the newly assigned Builder instance
-            var session = nonShareableTestCluster.Session;
-
-            // Check query to host distribution before killing nodes
-            var queriedHosts = new List<string>();
-            DateTime futureDateTime = DateTime.Now.AddSeconds(120);
-            while ((from singleHost in queriedHosts select singleHost).Distinct().Count() < 4 && DateTime.Now < futureDateTime)
+            var policy = new ConstantReconnectionPolicy(int.MaxValue);
+            var nonShareableTestCluster = TestClusterManager.GetNonShareableTestCluster(4, 1, true, false);
+            using (var cluster = Cluster.Builder().AddContactPoint(nonShareableTestCluster.InitialContactPoint).WithReconnectionPolicy(policy).Build())
             {
-                var rs = session.Execute("SELECT * FROM system.schema_columnfamilies");
-                queriedHosts.Add(rs.Info.QueriedHost.ToString());
-                Thread.Sleep(50);
-            }
-            Assert.AreEqual(4, (from singleHost in queriedHosts select singleHost).Distinct().Count(), "All hosts should have been queried!");
+                var session = cluster.Connect();
 
-            // Create List of actions
-            Action selectAction = () =>
-            {
-                var rs = session.Execute("SELECT * FROM system.schema_columnfamilies");
-                Assert.Greater(rs.Count(), 0);
-            };
-            var actions = new List<Action>();
-            for (var i = 0; i < 100; i++)
-            {
-                actions.Add(selectAction);
-            }
+                // Check query to host distribution before killing nodes
+                var queriedHosts = new List<string>();
+                DateTime futureDateTime = DateTime.Now.AddSeconds(120);
+                while ((from singleHost in queriedHosts select singleHost).Distinct().Count() < 4 && DateTime.Now < futureDateTime)
+                {
+                    var rs = session.Execute("SELECT * FROM system.schema_columnfamilies");
+                    queriedHosts.Add(rs.Info.QueriedHost.ToString());
+                    Thread.Sleep(50);
+                }
+                Assert.AreEqual(4, (from singleHost in queriedHosts select singleHost).Distinct().Count(), "All hosts should have been queried!");
 
-            //kill some nodes.
-            actions.Insert(20, () => nonShareableTestCluster.StopForce(1));
-            actions.Insert(20, () => nonShareableTestCluster.StopForce(2));
-            actions.Insert(80, () => nonShareableTestCluster.StopForce(3));
+                // Create List of actions
+                Action selectAction = () =>
+                {
+                    var rs = session.Execute("SELECT * FROM system.schema_columnfamilies");
+                    Assert.Greater(rs.Count(), 0);
+                };
+                var actions = new List<Action>();
+                for (var i = 0; i < 100; i++)
+                {
+                    actions.Add(selectAction);
+                }
 
-            //Execute in parallel more than 100 actions
-            Parallel.Invoke(parallelOptions, actions.ToArray());
+                //kill some nodes.
+                actions.Insert(20, () => nonShareableTestCluster.StopForce(1));
+                actions.Insert(20, () => nonShareableTestCluster.StopForce(2));
+                actions.Insert(80, () => nonShareableTestCluster.StopForce(3));
 
-            // Wait for the nodes to be killed
-            TestUtils.WaitForDown(nonShareableTestCluster.ClusterIpPrefix + "1", nonShareableTestCluster.Cluster, 20);
-            TestUtils.WaitForDown(nonShareableTestCluster.ClusterIpPrefix + "2", nonShareableTestCluster.Cluster, 20);
-            TestUtils.WaitForDown(nonShareableTestCluster.ClusterIpPrefix + "3", nonShareableTestCluster.Cluster, 20);
+                //Execute in parallel more than 100 actions
+                Parallel.Invoke(parallelOptions, actions.ToArray());
 
-            // Execute some more SELECTs
-            for (var i = 0; i < 250; i++)
-            {
-                var rowSet2 = session.Execute("SELECT * FROM system.schema_columnfamilies");
-                Assert.Greater(rowSet2.Count(), 0);
-                StringAssert.StartsWith(nonShareableTestCluster.ClusterIpPrefix + "4", rowSet2.Info.QueriedHost.ToString());
+                // Wait for the nodes to be killed
+                TestUtils.WaitForDown(nonShareableTestCluster.ClusterIpPrefix + "1", nonShareableTestCluster.Cluster, 20);
+                TestUtils.WaitForDown(nonShareableTestCluster.ClusterIpPrefix + "2", nonShareableTestCluster.Cluster, 20);
+                TestUtils.WaitForDown(nonShareableTestCluster.ClusterIpPrefix + "3", nonShareableTestCluster.Cluster, 20);
+
+                // Execute some more SELECTs
+                for (var i = 0; i < 250; i++)
+                {
+                    var rowSet2 = session.Execute("SELECT * FROM system.schema_columnfamilies");
+                    Assert.Greater(rowSet2.Count(), 0);
+                    StringAssert.StartsWith(nonShareableTestCluster.ClusterIpPrefix + "4", rowSet2.Info.QueriedHost.ToString());
+                }
             }
         }
 
@@ -158,88 +159,88 @@ namespace Cassandra.IntegrationTests.Core
             };
 
             var policy = new ConstantReconnectionPolicy(500);
-            ITestCluster nonShareableTestCluster = TestClusterManager.GetNonShareableTestCluster(4);
-            nonShareableTestCluster.Builder = new Builder().WithReconnectionPolicy(policy);
-            nonShareableTestCluster.InitClient(); // this will replace the existing session using the newly assigned Builder instance
-            var session = nonShareableTestCluster.Session;
-
-            // Check query to host distribution before killing nodes
-            var queriedHosts = new List<string>();
-            DateTime futureDateTime = DateTime.Now.AddSeconds(120);
-            while ((from singleHost in queriedHosts select singleHost).Distinct().Count() < 4 && DateTime.Now < futureDateTime)
+            var nonShareableTestCluster = TestClusterManager.GetNonShareableTestCluster(4, 1, true, false);
+            using (var cluster = Cluster.Builder().AddContactPoint(nonShareableTestCluster.InitialContactPoint).WithReconnectionPolicy(policy).Build())
             {
-                var rs = session.Execute("SELECT * FROM system.schema_columnfamilies");
-                queriedHosts.Add(rs.Info.QueriedHost.ToString());
-                Thread.Sleep(50);
+                var session = cluster.Connect();
+
+                // Check query to host distribution before killing nodes
+                var queriedHosts = new List<string>();
+                DateTime futureDateTime = DateTime.Now.AddSeconds(120);
+                while ((from singleHost in queriedHosts select singleHost).Distinct().Count() < 4 && DateTime.Now < futureDateTime)
+                {
+                    var rs = session.Execute("SELECT * FROM system.schema_columnfamilies");
+                    queriedHosts.Add(rs.Info.QueriedHost.ToString());
+                    Thread.Sleep(50);
+                }
+                Assert.AreEqual(4, (from singleHost in queriedHosts select singleHost).Distinct().Count(), "All hosts should have been queried!");
+
+                // Create list of actions
+                Action selectAction = () =>
+                {
+                    var rs = session.Execute("SELECT * FROM system.schema_columnfamilies");
+                    Assert.Greater(rs.Count(), 0);
+                };
+                var actions = new List<Action>();
+                for (var i = 0; i < 100; i++)
+                {
+                    actions.Add(selectAction);
+                    //Check that the control connection is using first host
+                    StringAssert.StartsWith(nonShareableTestCluster.ClusterIpPrefix + "1", nonShareableTestCluster.Cluster.Metadata.ControlConnection.BindAddress.ToString());
+
+                    //Kill some nodes
+                    //Including the one used by the control connection
+                    actions.Insert(20, () => nonShareableTestCluster.Stop(1));
+                    actions.Insert(20, () => nonShareableTestCluster.Stop(2));
+                    actions.Insert(80, () => nonShareableTestCluster.Stop(3));
+
+                    //Execute in parallel more than 100 actions
+                    Parallel.Invoke(parallelOptions, actions.ToArray());
+
+                    //Wait for the nodes to be killed
+                    TestUtils.WaitForDown(nonShareableTestCluster.ClusterIpPrefix + "1", nonShareableTestCluster.Cluster, 20);
+                    TestUtils.WaitForDown(nonShareableTestCluster.ClusterIpPrefix + "2", nonShareableTestCluster.Cluster, 20);
+                    TestUtils.WaitForDown(nonShareableTestCluster.ClusterIpPrefix + "3", nonShareableTestCluster.Cluster, 20);
+
+                    actions = new List<Action>();
+                    for (var j = 0; j < 100; j++)
+                    {
+                        actions.Add(selectAction);
+                    }
+
+                    //Check that the control connection is using first host
+                    //bring back some nodes
+                    actions.Insert(3, () => nonShareableTestCluster.Start(3));
+                    actions.Insert(50, () => nonShareableTestCluster.Start(2));
+                    actions.Insert(50, () => nonShareableTestCluster.Start(1));
+
+                    //Execute in parallel more than 100 actions
+                    Trace.TraceInformation("Start invoking with restart nodes");
+                    Parallel.Invoke(parallelOptions, actions.ToArray());
+
+                    //Wait for the nodes to be restarted
+                    TestUtils.WaitForUp(nonShareableTestCluster.ClusterIpPrefix + "1", DefaultCassandraPort, 30);
+                    TestUtils.WaitForUp(nonShareableTestCluster.ClusterIpPrefix + "2", DefaultCassandraPort, 30);
+                    TestUtils.WaitForUp(nonShareableTestCluster.ClusterIpPrefix + "3", DefaultCassandraPort, 30);
+
+                    queriedHosts.Clear();
+                    // keep querying hosts until they are all queried, or time runs out
+                    futureDateTime = DateTime.Now.AddSeconds(120);
+                    while ((from singleHost in queriedHosts select singleHost).Distinct().Count() < 4 && DateTime.Now < futureDateTime)
+                    {
+                        var rs = session.Execute("SELECT * FROM system.schema_columnfamilies");
+                        queriedHosts.Add(rs.Info.QueriedHost.ToString());
+                        Thread.Sleep(50);
+                    }
+                    //Check that one of the restarted nodes were queried
+                    Assert.Contains(nonShareableTestCluster.ClusterIpPrefix + "1:" + DefaultCassandraPort, queriedHosts);
+                    Assert.Contains(nonShareableTestCluster.ClusterIpPrefix + "2:" + DefaultCassandraPort, queriedHosts);
+                    Assert.Contains(nonShareableTestCluster.ClusterIpPrefix + "3:" + DefaultCassandraPort, queriedHosts);
+                    Assert.Contains(nonShareableTestCluster.ClusterIpPrefix + "4:" + DefaultCassandraPort, queriedHosts);
+                    //Check that the control connection is still using last host
+                    StringAssert.StartsWith(nonShareableTestCluster.ClusterIpPrefix + "4", nonShareableTestCluster.Cluster.Metadata.ControlConnection.BindAddress.ToString());
+                }
             }
-            Assert.AreEqual(4, (from singleHost in queriedHosts select singleHost).Distinct().Count(), "All hosts should have been queried!");
-
-            // Create list of actions
-            Action selectAction = () =>
-            {
-                var rs = session.Execute("SELECT * FROM system.schema_columnfamilies");
-                Assert.Greater(rs.Count(), 0);
-            };
-            var actions = new List<Action>();
-            for (var i = 0; i < 100; i++)
-            {
-                actions.Add(selectAction);
-            }
-
-            //Check that the control connection is using first host
-            StringAssert.StartsWith(nonShareableTestCluster.ClusterIpPrefix + "1", nonShareableTestCluster.Cluster.Metadata.ControlConnection.BindAddress.ToString());
-
-            //Kill some nodes
-            //Including the one used by the control connection
-            actions.Insert(20, () => nonShareableTestCluster.Stop(1));
-            actions.Insert(20, () => nonShareableTestCluster.Stop(2));
-            actions.Insert(80, () => nonShareableTestCluster.Stop(3));
-
-            //Execute in parallel more than 100 actions
-            Parallel.Invoke(parallelOptions, actions.ToArray());
-
-            //Wait for the nodes to be killed
-            TestUtils.WaitForDown(nonShareableTestCluster.ClusterIpPrefix + "1", nonShareableTestCluster.Cluster, 20);
-            TestUtils.WaitForDown(nonShareableTestCluster.ClusterIpPrefix + "2", nonShareableTestCluster.Cluster, 20);
-            TestUtils.WaitForDown(nonShareableTestCluster.ClusterIpPrefix + "3", nonShareableTestCluster.Cluster, 20);
-
-            actions = new List<Action>();
-            for (var i = 0; i < 100; i++)
-            {
-                actions.Add(selectAction);
-            }
-
-            //Check that the control connection is using first host
-            //bring back some nodes
-            actions.Insert(3, () => nonShareableTestCluster.Start(3));
-            actions.Insert(50, () => nonShareableTestCluster.Start(2));
-            actions.Insert(50, () => nonShareableTestCluster.Start(1));
-
-            //Execute in parallel more than 100 actions
-            Trace.TraceInformation("Start invoking with restart nodes");
-            Parallel.Invoke(parallelOptions, actions.ToArray());
-
-            //Wait for the nodes to be restarted
-            TestUtils.WaitForUp(nonShareableTestCluster.ClusterIpPrefix + "1", DefaultCassandraPort, 30);
-            TestUtils.WaitForUp(nonShareableTestCluster.ClusterIpPrefix + "2", DefaultCassandraPort, 30);
-            TestUtils.WaitForUp(nonShareableTestCluster.ClusterIpPrefix + "3", DefaultCassandraPort, 30);
-
-            queriedHosts.Clear();
-            // keep querying hosts until they are all queried, or time runs out
-            futureDateTime = DateTime.Now.AddSeconds(120);
-            while ((from singleHost in queriedHosts select singleHost).Distinct().Count() < 4 && DateTime.Now < futureDateTime)
-            {
-                var rs = session.Execute("SELECT * FROM system.schema_columnfamilies");
-                queriedHosts.Add(rs.Info.QueriedHost.ToString());
-                Thread.Sleep(50);
-            }
-            //Check that one of the restarted nodes were queried
-            Assert.Contains(nonShareableTestCluster.ClusterIpPrefix + "1:" + DefaultCassandraPort, queriedHosts);
-            Assert.Contains(nonShareableTestCluster.ClusterIpPrefix + "2:" + DefaultCassandraPort, queriedHosts);
-            Assert.Contains(nonShareableTestCluster.ClusterIpPrefix + "3:" + DefaultCassandraPort, queriedHosts);
-            Assert.Contains(nonShareableTestCluster.ClusterIpPrefix + "4:" + DefaultCassandraPort, queriedHosts);            
-            //Check that the control connection is still using last host
-            StringAssert.StartsWith(nonShareableTestCluster.ClusterIpPrefix + "4", nonShareableTestCluster.Cluster.Metadata.ControlConnection.BindAddress.ToString());
         }
 
         /// <summary>
@@ -248,49 +249,53 @@ namespace Cassandra.IntegrationTests.Core
         [Test]
         public void BootstrappedNode()
         {
-            var policy = new ConstantReconnectionPolicy(500);
-            ITestCluster testCluster = TestClusterManager.GetNonShareableTestCluster(1);
-            testCluster.Builder = new Builder().WithReconnectionPolicy(policy);
-            testCluster.InitClient(); // this will replace the existing session using the newly assigned Builder instance
-            testCluster.BootstrapNode(2);
-            TestUtils.WaitForUp(testCluster.ClusterIpPrefix + "2", DefaultCassandraPort, 60);
-
-            //Wait for the join to be online
-            string newlyBootstrappedHost = testCluster.ClusterIpPrefix + 2;
-            TestUtils.ValidateBootStrappedNodeIsQueried(testCluster, 2, newlyBootstrappedHost);
+            var testCluster = TestClusterManager.GetNonShareableTestCluster(1, 1, true, false);
+            using (var cluster = Cluster.Builder().AddContactPoint(testCluster.InitialContactPoint).Build())
+            {
+                var session = cluster.Connect();
+                testCluster.BootstrapNode(2);
+                var queried = false;
+                for (var i = 0; i < 10; i++)
+                {
+                    var rs = session.Execute("SELECT key FROM system.local");
+                    if (rs.Info.QueriedHost.Address.ToString() == testCluster.ClusterIpPrefix + 2)
+                    {
+                        queried = true;
+                        break;
+                    }
+                    Thread.Sleep(1000);
+                }
+                Assert.True(queried, "Newly bootstrapped node should be queried");
+            }
         }
 
         [Test]
         public void InitialKeyspaceRaceTest()
         {
-            ITestCluster testCluster = TestClusterManager.GetNonShareableTestCluster(1);
-
-            var cluster = Cluster.Builder()
+            var testCluster = TestClusterManager.GetNonShareableTestCluster(1, 1, true, false);
+            using (var cluster = Cluster.Builder()
                 .AddContactPoint(testCluster.InitialContactPoint)
                 //using a keyspace
                 .WithDefaultKeyspace("system")
                 //lots of connections per host
                 .WithPoolingOptions(new PoolingOptions().SetCoreConnectionsPerHost(HostDistance.Local, 30))
-                .Build();
-
-            var actions = new List<Action>(1000);
-            var session = cluster.Connect();
-            //Try to be force a race condition
-            for (var i = 0; i < 1000; i++)
+                .Build())
             {
-                //Some table within the system keyspace
-                actions.Add(() =>
+                var session = cluster.Connect();
+                //Try to be force a race condition
+                TestHelper.ParallelInvoke(() =>
                 {
-                    var task = session.ExecuteAsync(new SimpleStatement("SELECT * FROM schema_columnfamilies"));
-                    task.Wait();
-                });
+                    var t = session.ExecuteAsync(new SimpleStatement("SELECT * FROM schema_columnfamilies"));
+                    t.Wait();
+                }, 1000);
+                var actions = new Task[1000];
+                for (var i = 0; i < actions.Length; i++)
+                {
+                    actions[i] = session.ExecuteAsync(new SimpleStatement("SELECT * FROM local"));
+                }
+                // ReSharper disable once CoVariantArrayConversion
+                Task.WaitAll(actions);
             }
-            var parallelOptions = new ParallelOptions
-            {
-                TaskScheduler = new ThreadPerTaskScheduler(),
-                MaxDegreeOfParallelism = 1000
-            };
-            Parallel.Invoke(parallelOptions, actions.ToArray());
         }
 
         [Test]
@@ -306,6 +311,25 @@ namespace Cassandra.IntegrationTests.Core
 
             Assert.Throws<InvalidQueryException>(() => cluster.Connect());
             Assert.Throws<InvalidQueryException>(() => cluster.Connect("ANOTHER_THAT_DOES"));
+        }
+
+        [Test]
+        public void Connect_With_Ssl_Test()
+        {
+            //use ssl
+            var testCluster = TestClusterManager.GetTestCluster(1, 0, false, 1, true, false, 0, null, true);
+
+            using (var cluster = Cluster.Builder()
+                                        .AddContactPoint(testCluster.InitialContactPoint)
+                                        .WithSSL(new SSLOptions().SetRemoteCertValidationCallback((a, b, c, d) => true))
+                                        .Build())
+            {
+                Assert.DoesNotThrow(() =>
+                {
+                    var session = cluster.Connect();
+                    TestHelper.Invoke(() => session.Execute("select * from system.local"), 10);
+                });
+            }
         }
 
         [Test]
@@ -344,7 +368,7 @@ namespace Cassandra.IntegrationTests.Core
                 session.Execute("SELECT * FROM system.schema_keyspaces");
             }
             var host = cluster.AllHosts().First();
-            var pool = session.GetConnectionPool(host, HostDistance.Local);
+            var pool = session.GetOrCreateConnectionPool(host, HostDistance.Local);
             Trace.TraceInformation("Killing connections");
             foreach (var c in pool.OpenConnections)
             {
@@ -440,6 +464,115 @@ namespace Cassandra.IntegrationTests.Core
             Assert.True(waitHandle.WaitOne(waitTime), "Wait time passed but it was not signaled");
             t.Dispose();
             Assert.AreEqual(4, connectionAttempts);
+        }
+
+        /// Tests that reconnection attempts are made automatically in the background
+        ///
+        /// Reconnection_Attempts_Are_Made_In_The_Background tests that the driver automatically reschedules host
+        /// reconnections using timers in the background. It first creates a Cassandra cluster with 2 nodes, and verifies
+        /// that the control connection is created against the first host. It then manually sets the 2nd node as down (even
+        /// though it is still up), verifying that the driver see that host 2 as down. Finally it waits 5 seconds for the 
+        /// timer-based reconnection policy to kick in, and verifies that the driver sees the 2nd host as back up.
+        ///
+        /// @since 2.7.0
+        /// @jira_ticket CSHARP-280
+        /// @expected_result Host 2 should be automatically reconnected in the background after being set as down
+        ///
+        /// @test_assumptions
+        ///    - A Cassandra cluster with 2 nodes
+        /// @test_category connection:reconnection
+        [Test]
+        public void Reconnection_Attempts_Are_Made_In_The_Background()
+        {
+            var testCluster = TestClusterManager.GetNonShareableTestCluster(2, 1, true, false);
+
+            var cluster = Cluster.Builder()
+                                 .AddContactPoint(testCluster.InitialContactPoint)
+                                 .WithPoolingOptions(
+                                     new PoolingOptions()
+                                         .SetCoreConnectionsPerHost(HostDistance.Local, 2)
+                                         .SetHeartBeatInterval(0))
+                                 .WithReconnectionPolicy(new ConstantReconnectionPolicy(2000))
+                                 .Build();
+            var session = (Session)cluster.Connect();
+            TestHelper.Invoke(() => session.Execute("SELECT * FROM system.local"), 10);
+            var host = cluster.AllHosts().First(h => TestHelper.GetLastAddressByte(h) == 2);
+            // Check that the control connection is connected to another host
+            Assert.AreNotEqual(cluster.Metadata.ControlConnection.BindAddress, host.Address);
+            Assert.True(host.IsUp);
+            Trace.TraceInformation("Setting host 2 of 2 as down");
+            host.SetDown();
+            Assert.False(host.IsUp);
+            Trace.TraceInformation("Waiting for 5 seconds");
+            Thread.Sleep(5000);
+            Assert.True(host.IsUp);
+        }
+
+        /// Tests that reconnection attempts are made multiple times in the background
+        ///
+        /// Reconnection_Attempted_Multiple_Times tests that the driver automatically reschedules host reconnections using 
+        /// timers in the background multiple times. It first creates a Cassandra cluster with a single node, and verifies
+        /// that the driver considers it as up. It then stops the single node and verifies that the driver considers the node
+        /// as down, by both executing a query and retreiving a NoHostAvailableException, and checking the host status manually.
+        /// It then waits 15 seconds before verifying once more that the host is seen as down by the driver. Finally it restarts
+        /// the single node, waits 5 seconds for the timer-based reconnection policy to kick in, and verifies that the driver sees 
+        /// the host as back up.
+        ///
+        /// @since 2.7.0
+        /// @jira_ticket CSHARP-280
+        /// @expected_result The host should be attempted to be reconnected multiple times in the background
+        ///
+        /// @test_assumptions
+        ///    - A Cassandra cluster with a single node
+        /// @test_category connection:reconnection
+        [Test]
+        public void Reconnection_Attempted_Multiple_Times()
+        {
+            var testCluster = TestClusterManager.GetNonShareableTestCluster(1, 1, true, false);
+
+            using (var cluster = Cluster.Builder()
+                                        .AddContactPoint(testCluster.InitialContactPoint)
+                                        .WithPoolingOptions(
+                                            new PoolingOptions()
+                                                .SetCoreConnectionsPerHost(HostDistance.Local, 2))
+                                        .WithReconnectionPolicy(new ConstantReconnectionPolicy(2000))
+                                        .Build())
+            {
+                var session = (Session)cluster.Connect();
+                TestHelper.Invoke(() => session.Execute("SELECT * FROM system.local"), 10);
+                var host = cluster.AllHosts().First();
+                Assert.True(host.IsUp);
+                Trace.TraceInformation("Stopping node 1 of 1");
+                testCluster.Stop(1);
+                // Make sure the node is considered down
+                Assert.Throws<NoHostAvailableException>(() => session.Execute("SELECT * FROM system.local"));
+                Assert.False(host.IsUp);
+                Trace.TraceInformation("Waiting for 15 seconds");
+                Thread.Sleep(15000);
+                Assert.False(host.IsUp);
+                Trace.TraceInformation("Restarting node 1 of 1");
+                testCluster.Start(1);
+                Trace.TraceInformation("Waiting for 5 seconds");
+                Thread.Sleep(5000);
+                Assert.True(host.IsUp);
+            }
+        }
+
+        [Test]
+        public void Cluster_Should_Ignore_IpV6_Addresses_For_Not_Valid_Hosts()
+        {
+            var testCluster = TestClusterManager.GetNonShareableTestCluster(1, 0, true, false);
+            using (var cluster = Cluster.Builder()
+                                        .AddContactPoint(IPAddress.Parse("::1"))
+                                        .AddContactPoint(testCluster.InitialContactPoint)
+                                        .Build())
+            {
+                Assert.DoesNotThrow(() =>
+                {
+                    var session = cluster.Connect();
+                    session.Execute("select * from system.local");
+                });
+            }
         }
 
         /// <summary>

@@ -15,8 +15,10 @@
 //
 
 using System;
+using System.Collections.Generic;
+using System.IO;
 
-namespace Cassandra
+namespace Cassandra.Requests
 {
     /// <summary>
     /// Represents a protocol EXECUTE request
@@ -24,7 +26,7 @@ namespace Cassandra
     internal class ExecuteRequest : IQueryRequest, ICqlRequest
     {
         public const byte OpCode = 0x0A;
-        private readonly byte _flags;
+        private FrameHeader.HeaderFlag _headerFlags;
         private readonly byte[] _id;
         private readonly RowSetMetadata _metadata;
         private readonly QueryProtocolOptions _queryOptions;
@@ -51,6 +53,8 @@ namespace Cassandra
             get { return _queryOptions.SerialConsistency; }
         }
 
+        public IDictionary<string, byte[]> Payload { get; set; }
+
         public int ProtocolVersion { get; set; }
 
         public ExecuteRequest(int protocolVersion, byte[] id, RowSetMetadata metadata, bool tracingEnabled, QueryProtocolOptions queryOptions)
@@ -65,7 +69,7 @@ namespace Cassandra
             _queryOptions = queryOptions;
             if (tracingEnabled)
             {
-                _flags = 0x02;
+                _headerFlags = FrameHeader.HeaderFlag.Tracing;
             }
 
             if (Consistency.IsSerialConsistencyLevel())
@@ -82,17 +86,25 @@ namespace Cassandra
             }
         }
 
-        public RequestFrame GetFrame(short streamId)
+        public int WriteFrame(short streamId, MemoryStream stream)
         {
-            var wb = new BEBinaryWriter();
-            wb.WriteFrameHeader((byte)ProtocolVersion, _flags, streamId, OpCode);
+            var wb = new FrameWriter(stream);
+            if (Payload != null)
+            {
+                _headerFlags |= FrameHeader.HeaderFlag.CustomPayload;
+            }
+            wb.WriteFrameHeader((byte)ProtocolVersion, (byte)_headerFlags, streamId, OpCode);
+            if (Payload != null)
+            {
+                //A custom payload for this request
+                wb.WriteBytesMap(Payload);
+            }
             wb.WriteShortBytes(_id);
             _queryOptions.Write(wb, (byte)ProtocolVersion, true);
-
-            return wb.GetFrame();
+            return wb.Close();
         }
 
-        public void WriteToBatch(byte protocolVersion, BEBinaryWriter wb)
+        public void WriteToBatch(byte protocolVersion, FrameWriter wb)
         {
             wb.WriteByte(1); //prepared query
             wb.WriteShortBytes(_id);

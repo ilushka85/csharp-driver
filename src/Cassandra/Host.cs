@@ -27,16 +27,17 @@ namespace Cassandra
     /// </summary>
     public class Host
     {
-        private static readonly Logger Logger = new Logger(typeof(ControlConnection));
+        private static readonly Logger Logger = new Logger(typeof(Host));
         private readonly IReconnectionPolicy _reconnectionPolicy;
-        private volatile bool _isUpNow = true;
-        private DateTimeOffset _nextUpTime;
+        private int _isUpNow = 1;
+        private long _nextUpTime;
         private IReconnectionSchedule _reconnectionSchedule;
+        private int _reconnectionDelayFlag;
         /// <summary>
         /// Event that gets raised when the host is considered as DOWN (not available) by the driver.
         /// It will provide the time were reconnection will be attempted
         /// </summary>
-        internal event Action<Host, DateTimeOffset> Down;
+        internal event Action<Host, long> Down;
         /// <summary>
         /// Event that gets raised when the host is considered back UP (available for queries) by the driver.
         /// </summary>
@@ -47,7 +48,7 @@ namespace Cassandra
         /// </summary>
         public bool IsUp
         {
-            get { return _isUpNow; }
+            get { return Thread.VolatileRead(ref _isUpNow) == 1; }
         }
 
         /// <summary>
@@ -55,7 +56,7 @@ namespace Cassandra
         /// </summary>
         public bool IsConsiderablyUp
         {
-            get { return _isUpNow || (_nextUpTime <= DateTimeOffset.Now); }
+            get { return Thread.VolatileRead(ref _isUpNow) == 1 || Thread.VolatileRead(ref _nextUpTime) <= DateTimeOffset.Now.Ticks; }
         }
 
         /// <summary>
@@ -96,33 +97,45 @@ namespace Cassandra
         /// </summary>
         public bool SetDown()
         {
-            if (IsConsiderablyUp)
+            var wasUp = Interlocked.CompareExchange(ref _isUpNow, 0, 1);
+            //it was up OR the reconnection time has passed
+            if (wasUp == 1 || Thread.VolatileRead(ref _nextUpTime) <= DateTimeOffset.Now.Ticks)
             {
-                Logger.Warning("Host " + this.Address.ToString() + " considered as DOWN");
-                _nextUpTime = DateTimeOffset.Now.AddMilliseconds(_reconnectionSchedule.NextDelayMs());
-                if (Down != null)
+                if (Interlocked.CompareExchange(ref _reconnectionDelayFlag, 1, 0) != 0)
                 {
-                    //Raise event
-                    Down(this, _nextUpTime);
+                    //only allow 1 thread to set the next delay as it is not a thread-safe operation
+                    return false;
                 }
-            }
-            if (_isUpNow)
-            {
-                _isUpNow = false;
+                try
+                {
+                    var delay = _reconnectionSchedule.NextDelayMs();
+                    Logger.Warning("Host {0} considered as DOWN. Reconnection delay {1}ms", Address, delay);
+                    _nextUpTime = DateTimeOffset.Now.Ticks + (delay*TimeSpan.TicksPerMillisecond);
+                    if (Down != null)
+                    {
+                        //Raise event
+                        Down(this, delay);
+                    }
+                }
+                finally
+                {
+                    Interlocked.Exchange(ref _reconnectionDelayFlag, 0);
+                }
                 return true;
             }
             return false;
         }
-        
+
         /// <summary>
         /// Returns true if the host was DOWN and it was set as UP
         /// </summary>
         public bool BringUpIfDown()
         {
-            if (!_isUpNow)
+            var wasUp = Interlocked.CompareExchange(ref _isUpNow, 1, 0);
+            if (wasUp == 0)
             {
+                Logger.Info("Host {0} is now UP");
                 Interlocked.Exchange(ref _reconnectionSchedule, _reconnectionPolicy.NewSchedule());
-                _isUpNow = true;
                 if (Up != null)
                 {
                     Up(this);

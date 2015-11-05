@@ -14,7 +14,7 @@ namespace Cassandra.Tests
 
         private static PreparedStatement GetPrepared(string query = Query, RowSetMetadata metadata = null, int protocolVersion = 3)
         {
-            return new PreparedStatement(metadata, new byte[0], query, null, null, protocolVersion);
+            return new PreparedStatement(metadata, new byte[0], query, null, protocolVersion);
         }
 
         [Test]
@@ -88,9 +88,19 @@ namespace Cassandra.Tests
         {
             var statement = new SimpleStatement();
             Assert.True(statement.AutoPage);
-            statement.SetPagingState(new byte[0]);
+            statement.SetPagingState(new byte[] { 1, 2, 3, 4, 5, 6 });
             Assert.False(statement.AutoPage);
             Assert.NotNull(statement.PagingState);
+        }
+
+        [Test]
+        public void Statement_SetPagingState_Null_Does_Not_Disable_AutoPage()
+        {
+            var statement = new SimpleStatement();
+            Assert.True(statement.AutoPage);
+            statement.SetPagingState(null);
+            Assert.True(statement.AutoPage);
+            Assert.Null(statement.PagingState);
         }
 
         [Test]
@@ -113,6 +123,18 @@ namespace Cassandra.Tests
             var bound = ps.Bind("dummy name", 1000);
             Assert.NotNull(bound.RoutingKey);
             CollectionAssert.AreEqual(TypeCodec.Encode(protocolVersion, 1000), bound.RoutingKey.RawRoutingKey);
+        }
+
+        [Test]
+        public void PreparedStatement_Bind_SetsIdempotence()
+        {
+            var ps = GetPrepared("SELECT * FROM tbl1 WHERE name = ? and id = ?");
+            ps.SetIdempotence(true);
+            var bound = ps.Bind("dummy name 1", 1000);
+            Assert.True(bound.IsIdempotent ?? false);
+            ps.SetIdempotence(false);
+            bound = ps.Bind("dummy name 2", 1000);
+            Assert.False(bound.IsIdempotent ?? true);
         }
 
         [Test]

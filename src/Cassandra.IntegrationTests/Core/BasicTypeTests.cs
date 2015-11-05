@@ -21,6 +21,7 @@ using System.Numerics;
 using System.Text;
 using System.Threading.Tasks;
 using System.Collections.Concurrent;
+using System.Net;
 using Cassandra.IntegrationTests.TestBase;
 using Cassandra.IntegrationTests.TestClusterManagement;
 using NUnit.Framework;
@@ -274,9 +275,27 @@ namespace Cassandra.IntegrationTests.Core
         }
 
         [Test]
-        public void LargeBatchInsert_MultipleTypes()
+        public void QueryTraceEnabledTest()
         {
-            BigInsertTest(1000);
+            var rs = Session.Execute(new SimpleStatement("SELECT * from system.local").EnableTracing());
+            Assert.NotNull(rs.Info.QueryTrace);
+            Assert.AreEqual(IPAddress.Parse(TestCluster.InitialContactPoint), rs.Info.QueryTrace.Coordinator);
+            Assert.Greater(rs.Info.QueryTrace.Events.Count, 0);
+            if (Session.BinaryProtocolVersion >= 4)
+            {
+                Assert.NotNull(rs.Info.QueryTrace.ClientAddress);   
+            }
+            else
+            {
+                Assert.Null(rs.Info.QueryTrace.ClientAddress);
+            }
+        }
+
+        [Test]
+        public void QueryTraceDisabledByDefaultTest()
+        {
+            var rs = Session.Execute(new SimpleStatement("SELECT * from system.local"));
+            Assert.Null(rs.Info.QueryTrace);
         }
 
         [Test]
@@ -568,40 +587,6 @@ namespace Cassandra.IntegrationTests.Core
                                            null);
 
             QueryTools.ExecuteSyncQuery(Session, string.Format("SELECT * FROM {0};", tableName),
-                                        Session.Cluster.Configuration.QueryOptions.GetConsistencyLevel());
-        }
-
-        public void BigInsertTest(int RowsNo = 5000)
-        {
-            string tableName = TestUtils.GetUniqueTableName();
-            try
-            {
-                QueryTools.ExecuteSyncNonQuery(Session, string.Format(@"CREATE TABLE {0}(
-                     tweet_id uuid,
-                     author text,
-                     body text,
-                     isok boolean,
-		             fval float,
-		             dval double,
-                     PRIMARY KEY(tweet_id))", tableName));
-            }
-            catch (AlreadyExistsException)
-            {
-            }
-
-            var longQ = new StringBuilder();
-            longQ.AppendLine("BEGIN BATCH ");
-
-            for (int i = 0; i < RowsNo; i++)
-            {
-                longQ.AppendFormat(@"INSERT INTO {0} (
-                            tweet_id, author, isok, body, fval, dval)
-                    VALUES ({1},'test{2}',{3},'body{2}',{4},{5});",
-                    tableName, Guid.NewGuid(), i, i % 2 == 0 ? "false" : "true", Randomm.Instance.NextSingle(), Randomm.Instance.NextDouble());
-            }
-            longQ.AppendLine("APPLY BATCH;");
-            QueryTools.ExecuteSyncNonQuery(Session, longQ.ToString(), "Inserting...");
-            QueryTools.ExecuteSyncQuery(Session, string.Format(@"SELECT * from {0};", tableName),
                                         Session.Cluster.Configuration.QueryOptions.GetConsistencyLevel());
         }
     }

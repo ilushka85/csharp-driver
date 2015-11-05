@@ -18,39 +18,31 @@ using System.Collections.Generic;
 
 namespace Cassandra
 {
-    internal class OutputOptions : IOutput, IWaitableForDispose
+    internal class OutputOptions : IOutput
     {
         private readonly Dictionary<string, string[]> _options;
+
+        public System.Guid? TraceId { get; internal set; }
 
         public IDictionary<string, string[]> Options
         {
             get { return _options; }
         }
 
-        internal OutputOptions(BEBinaryReader reader)
+        internal OutputOptions(FrameReader reader)
         {
             _options = new Dictionary<string, string[]>();
             int n = reader.ReadUInt16();
-            for (int i = 0; i < n; i++)
+            for (var i = 0; i < n; i++)
             {
-                string k = reader.ReadString();
-                string[] v = reader.ReadStringList().ToArray();
+                var k = reader.ReadString();
+                var v = reader.ReadStringList();
                 _options.Add(k, v);
             }
         }
 
         public void Dispose()
         {
-        }
-
-        public void WaitForDispose()
-        {
-        }
-
-        public System.Guid? TraceId
-        {
-            get;
-            internal set;
         }
     }
 }

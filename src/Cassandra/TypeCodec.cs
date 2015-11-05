@@ -42,6 +42,10 @@ namespace Cassandra
         private const string FrozenTypeName = "org.apache.cassandra.db.marshal.FrozenType";
         public const string ReversedTypeName = "org.apache.cassandra.db.marshal.ReversedType";
         public const string CompositeTypeName = "org.apache.cassandra.db.marshal.CompositeType";
+        /// <summary>
+        /// An instance of a buffer that represents the value Unset
+        /// </summary>
+        internal static readonly byte[] UnsetBuffer = new byte[0];
         private static readonly DateTimeOffset UnixStart = new DateTimeOffset(1970, 1, 1, 0, 0, 0, 0, TimeSpan.Zero);
         private static readonly ConcurrentDictionary<string, UdtMap> UdtMapsByName = new ConcurrentDictionary<string, UdtMap>();
         private static readonly ConcurrentDictionary<Type, UdtMap> UdtMapsByClrType = new ConcurrentDictionary<Type, UdtMap>();
@@ -66,6 +70,10 @@ namespace Cassandra
             {ColumnTypeCode.Varchar,      EncodeVarchar},
             {ColumnTypeCode.Timeuuid,     EncodeTimeuuid},
             {ColumnTypeCode.Inet,         EncodeInet},
+            {ColumnTypeCode.Date,         EncodeDate},
+            {ColumnTypeCode.Time,         EncodeTime},
+            {ColumnTypeCode.SmallInt,     EncodeShort},
+            {ColumnTypeCode.TinyInt,      EncodeSByte},
             {ColumnTypeCode.List,         EncodeList},
             {ColumnTypeCode.Map,          EncodeMap},
             {ColumnTypeCode.Set,          EncodeSet},
@@ -95,6 +103,10 @@ namespace Cassandra
             {ColumnTypeCode.Varchar,      DecodeVarchar},
             {ColumnTypeCode.Timeuuid,     DecodeTimeuuid},
             {ColumnTypeCode.Inet,         DecodeInet},
+            {ColumnTypeCode.Date,         DecodeDate},
+            {ColumnTypeCode.Time,         DecodeTime},
+            {ColumnTypeCode.SmallInt,     DecodeShort},
+            {ColumnTypeCode.TinyInt,      DecodeSByte},
             {ColumnTypeCode.List,         DecodeList},
             {ColumnTypeCode.Map,          DecodeMap},
             {ColumnTypeCode.Set,          DecodeSet},
@@ -109,21 +121,25 @@ namespace Cassandra
         /// </summary>
         private static readonly Dictionary<ColumnTypeCode, DefaultTypeFromCqlTypeDelegate> DefaultTypes = new Dictionary<ColumnTypeCode, DefaultTypeFromCqlTypeDelegate>()
         {
-            {ColumnTypeCode.Ascii,        GetDefaultTypeFromAscii},
-            {ColumnTypeCode.Bigint,       GetDefaultTypeFromBigint},
-            {ColumnTypeCode.Blob,         GetDefaultTypeFromBlob},
-            {ColumnTypeCode.Boolean,      GetDefaultTypeFromBoolean},
-            {ColumnTypeCode.Counter,      GetDefaultTypeFromCounter},
+            {ColumnTypeCode.Ascii,        _ => typeof (string)},
+            {ColumnTypeCode.Bigint,       _ => typeof (long)},
+            {ColumnTypeCode.Blob,         _ => typeof (byte[])},
+            {ColumnTypeCode.Boolean,      _ => typeof (bool)},
+            {ColumnTypeCode.Counter,      _ => typeof (long)},
             {ColumnTypeCode.Custom,       GetDefaultTypeFromCustom},
-            {ColumnTypeCode.Double,       GetDefaultTypeFromDouble},
-            {ColumnTypeCode.Float,        GetDefaultTypeFromFloat},
-            {ColumnTypeCode.Int,          GetDefaultTypeFromInt},
-            {ColumnTypeCode.Text,         GetDefaultTypeFromText},
-            {ColumnTypeCode.Timestamp,    GetDefaultTypeFromTimestamp},
-            {ColumnTypeCode.Uuid,         GetDefaultTypeFromUuid},
-            {ColumnTypeCode.Varchar,      GetDefaultTypeFromVarchar},
-            {ColumnTypeCode.Timeuuid,     GetDefaultTypeFromTimeuuid},
-            {ColumnTypeCode.Inet,         GetDefaultTypeFromInet},
+            {ColumnTypeCode.Double,       _ => typeof (double)},
+            {ColumnTypeCode.Float,        _ => typeof (float)},
+            {ColumnTypeCode.Int,          _ => typeof (int)},
+            {ColumnTypeCode.Text,         _ => typeof (string)},
+            {ColumnTypeCode.Timestamp,    _ => typeof (DateTimeOffset)},
+            {ColumnTypeCode.Uuid,         _ => typeof (Guid)},
+            {ColumnTypeCode.Varchar,      _ => typeof (string)},
+            {ColumnTypeCode.Timeuuid,     _ => typeof (Guid)},
+            {ColumnTypeCode.Inet,         _ => typeof (IPAddress)},
+            {ColumnTypeCode.Date,         _ => typeof (LocalDate)},
+            {ColumnTypeCode.Time,         _ => typeof (LocalTime)},
+            {ColumnTypeCode.SmallInt,     _ => typeof (short)},
+            {ColumnTypeCode.TinyInt,      _ => typeof (sbyte)},
             {ColumnTypeCode.List,         GetDefaultTypeFromList},
             {ColumnTypeCode.Map,          GetDefaultTypeFromMap},
             {ColumnTypeCode.Set,          GetDefaultTypeFromSet},
@@ -150,6 +166,10 @@ namespace Cassandra
             { typeof(DateTime), ColumnTypeCode.Timestamp },
             { typeof(Guid), ColumnTypeCode.Uuid },
             { typeof(TimeUuid), ColumnTypeCode.Timeuuid },
+            { typeof(LocalDate), ColumnTypeCode.Date },
+            { typeof(LocalTime), ColumnTypeCode.Time },
+            { typeof(short), ColumnTypeCode.SmallInt },
+            { typeof(sbyte), ColumnTypeCode.TinyInt },
             { TypeAdapters.DecimalTypeAdapter.GetDataType(), ColumnTypeCode.Decimal },
             { TypeAdapters.VarIntTypeAdapter.GetDataType(), ColumnTypeCode.Varint }
         };
@@ -166,6 +186,10 @@ namespace Cassandra
             {"org.apache.cassandra.db.marshal.DoubleType", ColumnTypeCode.Double},
             {"org.apache.cassandra.db.marshal.BooleanType", ColumnTypeCode.Boolean},
             {"org.apache.cassandra.db.marshal.InetAddressType", ColumnTypeCode.Inet},
+            {"org.apache.cassandra.db.marshal.SimpleDateType", ColumnTypeCode.Date},
+            {"org.apache.cassandra.db.marshal.TimeType", ColumnTypeCode.Time},
+            {"org.apache.cassandra.db.marshal.ShortType", ColumnTypeCode.SmallInt},
+            {"org.apache.cassandra.db.marshal.ByteType", ColumnTypeCode.TinyInt},
             {"org.apache.cassandra.db.marshal.DateType", ColumnTypeCode.Timestamp},
             {"org.apache.cassandra.db.marshal.TimestampType", ColumnTypeCode.Timestamp},
             {"org.apache.cassandra.db.marshal.LongType", ColumnTypeCode.Bigint},
@@ -181,72 +205,14 @@ namespace Cassandra
             return new[] {b[3], b[2], b[1], b[0], b[5], b[4], b[7], b[6], b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15]};
         }
 
-        internal static int BytesToInt32(byte[] buffer, int idx)
+        private static DateTimeOffset BytesToDateTimeOffset(byte[] buffer)
         {
-            return (buffer[idx] << 24)
-                   | (buffer[idx + 1] << 16 & 0xFF0000)
-                   | (buffer[idx + 2] << 8 & 0xFF00)
-                   | (buffer[idx + 3] & 0xFF);
-        }
-
-        private static ushort BytesToUInt16(byte[] buffer, int idx)
-        {
-            return (ushort) ((buffer[idx] << 8) | (buffer[idx + 1] & 0xFF));
-        }
-
-        private static byte[] Int32ToBytes(int value)
-        {
-            return new[]
-            {
-                (byte) ((value & 0xFF000000) >> 24),
-                (byte) ((value & 0xFF0000) >> 16),
-                (byte) ((value & 0xFF00) >> 8),
-                (byte) (value & 0xFF)
-            };
-        }
-
-        private static byte[] Int64ToBytes(long value)
-        {
-            return new[]
-            {
-                (byte) (((ulong) value & 0xFF00000000000000) >> 56),
-                (byte) ((value & 0xFF000000000000) >> 48),
-                (byte) ((value & 0xFF0000000000) >> 40),
-                (byte) ((value & 0xFF00000000) >> 32),
-                (byte) ((value & 0xFF000000) >> 24),
-                (byte) ((value & 0xFF0000) >> 16),
-                (byte) ((value & 0xFF00) >> 8),
-                (byte) (value & 0xFF)
-            };
-        }
-
-        private static long BytesToInt64(byte[] buffer, int idx)
-        {
-            return (long) (
-                              (((ulong) buffer[idx] << 56) & 0xFF00000000000000)
-                              | (((ulong) buffer[idx + 1] << 48) & 0xFF000000000000)
-                              | (((ulong) buffer[idx + 2] << 40) & 0xFF0000000000)
-                              | (((ulong) buffer[idx + 3] << 32) & 0xFF00000000)
-                              | (((ulong) buffer[idx + 4] << 24) & 0xFF000000)
-                              | (((ulong) buffer[idx + 5] << 16) & 0xFF0000)
-                              | (((ulong) buffer[idx + 6] << 8) & 0xFF00)
-                              | (((ulong) buffer[idx + 7]) & 0xFF)
-                          );
-        }
-
-        private static byte[] Int16ToBytes(short value)
-        {
-            return new[] {(byte) ((value & 0xFF00) >> 8), (byte) (value & 0xFF)};
-        }
-
-        private static DateTimeOffset BytesToDateTimeOffset(byte[] buffer, int idx)
-        {
-            return UnixStart.AddMilliseconds(BytesToInt64(buffer, 0));
+            return UnixStart.AddMilliseconds(BeConverter.ToInt64(buffer, 0));
         }
 
         private static byte[] DateTimeOffsetToBytes(DateTimeOffset dt)
         {
-            return Int64ToBytes(Convert.ToInt64(Math.Floor((dt - UnixStart).TotalMilliseconds)));
+            return BeConverter.GetBytes(Convert.ToInt64(Math.Floor((dt - UnixStart).TotalMilliseconds)));
         }
 
         public static TimeSpan ToUnixTime(DateTimeOffset value)
@@ -259,7 +225,7 @@ namespace Cassandra
         /// </summary>
         public static object Decode(int protocolVersion, byte[] buffer, ColumnTypeCode typeCode, IColumnInfo typeInfo, Type cSharpType = null)
         {
-            DecodeHandler handler = null;
+            DecodeHandler handler;
             if (!Decoders.TryGetValue(typeCode, out handler))
             {
                 throw new InvalidTypeException("No decoder defined for type code " + typeCode);
@@ -368,15 +334,25 @@ namespace Cassandra
         /// <summary>
         /// Takes an object and serializes it into bytes using the protocol format
         /// </summary>
+        /// <exception cref="InvalidTypeException" />
         public static byte[] Encode(int protocolVersion, object value)
         {
+            if (value == Unset.Value)
+            {
+                if (protocolVersion < 4)
+                {
+                    throw new InvalidTypeException("Unset is not supported by this Cassandra version");   
+                }
+                //Return a buffer that represents the value Unset
+                return UnsetBuffer;
+            }
             if (value == null)
             {
                 return null;
             }
             IColumnInfo typeInfo;
             var typeCode = GetColumnTypeCodeInfo(value.GetType(), out typeInfo);
-            EncodeHandler handler = null;
+            EncodeHandler handler;
             if (!Encoders.TryGetValue(typeCode, out handler))
             {
                 throw new InvalidTypeException("No encoder defined for type code " + typeCode);
@@ -421,11 +397,6 @@ namespace Cassandra
             return Encoding.ASCII.GetString(value);
         }
 
-        private static Type GetDefaultTypeFromAscii(IColumnInfo typeInfo)
-        {
-            return typeof (string);
-        }
-
         public static byte[] EncodeAscii(int protocolVersion, IColumnInfo typeInfo, object value)
         {
             CheckArgument<string>(value);
@@ -437,11 +408,6 @@ namespace Cassandra
             return value;
         }
 
-        private static Type GetDefaultTypeFromBlob(IColumnInfo typeInfo)
-        {
-            return typeof (byte[]);
-        }
-
         public static byte[] EncodeBlob(int protocolVersion, IColumnInfo typeInfo, object value)
         {
             CheckArgument<byte[]>(value);
@@ -450,28 +416,18 @@ namespace Cassandra
 
         public static object DecodeBigint(int protocolVersion, IColumnInfo typeInfo, byte[] value, Type cSharpType)
         {
-            return BytesToInt64(value, 0);
-        }
-
-        private static Type GetDefaultTypeFromBigint(IColumnInfo typeInfo)
-        {
-            return typeof (long);
+            return BeConverter.ToInt64(value);
         }
 
         public static byte[] EncodeBigint(int protocolVersion, IColumnInfo typeInfo, object value)
         {
             CheckArgument<long>(value);
-            return Int64ToBytes((long) value);
+            return BeConverter.GetBytes((long) value);
         }
 
         public static object DecodeUuid(int protocolVersion, IColumnInfo typeInfo, byte[] value, Type cSharpType)
         {
             return new Guid(GuidShuffle(value));
-        }
-
-        private static Type GetDefaultTypeFromUuid(IColumnInfo typeInfo)
-        {
-            return typeof (Guid);
         }
 
         public static byte[] EncodeUuid(int protocolVersion, IColumnInfo typeInfo, object value)
@@ -512,29 +468,7 @@ namespace Cassandra
             var childTypeCode = ((SetColumnInfo) typeInfo).KeyTypeCode;
             var childTypeInfo = ((SetColumnInfo)typeInfo).KeyTypeInfo;
             var valueType = GetDefaultTypeFromCqlType(childTypeCode, childTypeInfo);
-            var result = DecodeCollection(protocolVersion, valueType, childTypeCode, childTypeInfo, value);
-            if (cSharpType == null)
-            {
-                return Utils.ToCollectionType(typeof(List<>), valueType, result);
-            }
-            //Is a generic type is expected, check if supported
-            if (cSharpType.IsArray)
-            {
-                return result;
-            }
-            if (!cSharpType.IsGenericType)
-            {
-                return Utils.ToCollectionType(typeof (List<>), valueType, result);
-            }
-            if (cSharpType.GetGenericTypeDefinition() == typeof(SortedSet<>))
-            {
-                return Utils.ToCollectionType(typeof(SortedSet<>), valueType, result);
-            }
-            if (cSharpType.GetGenericTypeDefinition() == typeof(HashSet<>))
-            {
-                return Utils.ToCollectionType(typeof(HashSet<>), valueType, result);
-            }
-            return Utils.ToCollectionType(typeof(List<>), valueType, result);
+            return DecodeCollection(protocolVersion, valueType, childTypeCode, childTypeInfo, value);
         }
 
         /// <summary>
@@ -542,17 +476,17 @@ namespace Cassandra
         /// </summary>
         private static int DecodeCollectionLength(int protocolVersion, byte[] buffer, ref int index)
         {
-            var result = 0;
+            int result;
             if (protocolVersion < 3)
             {
                 //length is a short
-                result = BytesToUInt16(buffer, index);
+                result = BeConverter.ToInt16(buffer, index);
                 index += 2;
             }
             else
             {
                 //length is expressed in int
-                result = BytesToInt32(buffer, index);
+                result = BeConverter.ToInt32(buffer, index);
                 index += 4;
             }
             return result;
@@ -593,16 +527,7 @@ namespace Cassandra
 
         public static object DecodeTimestamp(int protocolVersion, IColumnInfo typeInfo, byte[] value, Type cSharpType)
         {
-            if (cSharpType == null || cSharpType == typeof(object) || cSharpType == typeof(DateTimeOffset))
-            {
-                return BytesToDateTimeOffset(value, 0);
-            }
-            return BytesToDateTimeOffset(value, 0).DateTime;
-        }
-
-        private static Type GetDefaultTypeFromTimestamp(IColumnInfo typeInfo)
-        {
-            return typeof (DateTimeOffset);
+            return BytesToDateTimeOffset(value);
         }
 
         public static byte[] EncodeTimestamp(int protocolVersion, IColumnInfo typeInfo, object value)
@@ -621,17 +546,7 @@ namespace Cassandra
 
         public static object DecodeTimeuuid(int protocolVersion, IColumnInfo typeInfo, byte[] value, Type cSharpType)
         {
-            var decodedValue = new Guid(GuidShuffle(value));
-            if (cSharpType == typeof (TimeUuid))
-            {
-                return (TimeUuid) decodedValue;
-            }
-            return decodedValue;
-        }
-
-        private static Type GetDefaultTypeFromTimeuuid(IColumnInfo typeInfo)
-        {
-            return typeof (Guid);
+            return new Guid(GuidShuffle(value));
         }
 
         public static byte[] EncodeTimeuuid(int protocolVersion, IColumnInfo typeInfo, object value)
@@ -730,6 +645,10 @@ namespace Cassandra
             foreach (DictionaryEntry item in dictionary)
             {
                 var itemKeyBuffer = Encode(protocolVersion, item.Key);
+                if (item.Value == null)
+                {
+                    throw new ArgumentNullException("key:" + item.Key, "Null values are not supported inside collections");
+                }
                 var itemValueBuffer = Encode(protocolVersion, item.Value);
                 keyBuffers.Add(itemKeyBuffer);
                 valueBuffers.Add(itemValueBuffer);
@@ -771,11 +690,6 @@ namespace Cassandra
             return Encoding.UTF8.GetString(value);
         }
 
-        private static Type GetDefaultTypeFromText(IColumnInfo typeInfo)
-        {
-            return typeof (string);
-        }
-
         public static byte[] EncodeText(int protocolVersion, IColumnInfo typeInfo, object value)
         {
             CheckArgument<string>(value);
@@ -785,11 +699,6 @@ namespace Cassandra
         public static object DecodeVarchar(int protocolVersion, IColumnInfo typeInfo, byte[] value, Type cSharpType)
         {
             return Encoding.UTF8.GetString(value);
-        }
-
-        private static Type GetDefaultTypeFromVarchar(IColumnInfo typeInfo)
-        {
-            return typeof (string);
         }
 
         public static byte[] EncodeVarchar(int protocolVersion, IColumnInfo typeInfo, object value)
@@ -811,12 +720,7 @@ namespace Cassandra
             var childTypeCode = ((ListColumnInfo) typeInfo).ValueTypeCode;
             var childTypeInfo = ((ListColumnInfo) typeInfo).ValueTypeInfo;
             var valueType = GetDefaultTypeFromCqlType(childTypeCode, childTypeInfo);
-            var result = DecodeCollection(protocolVersion, valueType, childTypeCode, childTypeInfo, value);
-            if (cSharpType != null && cSharpType.IsArray)
-            {
-                return result;
-            }
-            return Utils.ToCollectionType(typeof(List<>), valueType, result);
+            return DecodeCollection(protocolVersion, valueType, childTypeCode, childTypeInfo, value);
         }
 
         private static Type GetDefaultTypeFromList(IColumnInfo typeInfo)
@@ -861,6 +765,10 @@ namespace Cassandra
             var byteLength = 0;
             foreach (var item in value)
             {
+                if (item == null)
+                {
+                    throw new ArgumentNullException(null, "Null values are not supported inside collections");   
+                }
                 var buf = Encode(protocolVersion, item);
                 bufferList.Add(buf);
                 byteLength += buf.Length;
@@ -947,7 +855,7 @@ namespace Cassandra
             var index = 0;
             foreach (var buf in bufferList)
             {
-                var bufferItemLength = Int32ToBytes(buf != null ? buf.Length : -1);
+                var bufferItemLength = BeConverter.GetBytes(buf != null ? buf.Length : -1);
                 Buffer.BlockCopy(bufferItemLength, 0, result, index, bufferItemLength.Length);
                 index += bufferItemLength.Length;
                 if (buf == null)
@@ -967,9 +875,9 @@ namespace Cassandra
         {
             if (protocolVersion < 3)
             {
-                return Int16ToBytes((short) value);
+                return BeConverter.GetBytes((short)value);
             }
-            return Int32ToBytes(value);
+            return BeConverter.GetBytes(value);
         }
 
         public static object DecodeInet(int protocolVersion, IColumnInfo typeInfo, byte[] value, Type cSharpType)
@@ -981,87 +889,105 @@ namespace Cassandra
             throw new DriverInternalError("Invalid length of Inet Addr");
         }
 
-        private static Type GetDefaultTypeFromInet(IColumnInfo typeInfo)
-        {
-            return typeof(IPAddress);
-        }
-
         public static byte[] EncodeInet(int protocolVersion, IColumnInfo typeInfo, object value)
         {
             CheckArgument<IPAddress>(value);
+            // ReSharper disable once PossibleNullReferenceException
             return (value as IPAddress).GetAddressBytes();
         }
 
         public static object DecodeCounter(int protocolVersion, IColumnInfo typeInfo, byte[] buffer, Type cSharpType)
         {
-            return BytesToInt64(buffer, 0);
-        }
-
-        private static Type GetDefaultTypeFromCounter(IColumnInfo typeInfo)
-        {
-            return typeof (long);
+            return BeConverter.ToInt64(buffer);
         }
 
         public static byte[] EncodeCounter(int protocolVersion, IColumnInfo typeInfo, object value)
         {
             CheckArgument<long>(value);
-            return Int64ToBytes((long) value);
+            return BeConverter.GetBytes((long) value);
         }
 
         public static object DecodeDouble(int protocolVersion, IColumnInfo typeInfo, byte[] value, Type cSharpType)
         {
-            var buffer = (byte[]) value.Clone();
-            Array.Reverse(buffer);
-            return BitConverter.ToDouble(buffer, 0);
-        }
-
-        private static Type GetDefaultTypeFromDouble(IColumnInfo typeInfo)
-        {
-            return typeof (double);
+            return BeConverter.ToDouble(value);
         }
 
         public static byte[] EncodeDouble(int protocolVersion, IColumnInfo typeInfo, object value)
         {
-            CheckArgument<double>(value);
-            byte[] ret = BitConverter.GetBytes((double) value);
-            Array.Reverse(ret);
-            return ret;
+            return BeConverter.GetBytes((double) value);
         }
 
         public static object DecodeInt(int protocolVersion, IColumnInfo typeInfo, byte[] buffer, Type cSharpType)
         {
-            return BytesToInt32(buffer, 0);
+            return BeConverter.ToInt32(buffer, 0);
         }
 
-        private static Type GetDefaultTypeFromInt(IColumnInfo typeInfo)
+        public static object DecodeDate(int protocolVersion, IColumnInfo typeInfo, byte[] buffer, Type cSharpType)
         {
-            return typeof (int);
+            var days = unchecked((uint)((buffer[0] << 24)
+                   | (buffer[1] << 16)
+                   | (buffer[2] << 8)
+                   | (buffer[3])));
+            return new LocalDate(days);
+        }
+
+        public static object DecodeTime(int protocolVersion, IColumnInfo typeInfo, byte[] buffer, Type cSharpType)
+        {
+            return new LocalTime(BeConverter.ToInt64(buffer));
+        }
+
+        public static object DecodeShort(int protocolVersion, IColumnInfo typeInfo, byte[] buffer, Type cSharpType)
+        {
+            return BeConverter.ToInt16(buffer);
+        }
+
+        public static object DecodeSByte(int protocolVersion, IColumnInfo typeInfo, byte[] buffer, Type cSharpType)
+        {
+            return unchecked((sbyte)buffer[0]);
         }
 
         public static byte[] EncodeInt(int protocolVersion, IColumnInfo typeInfo, object value)
         {
             CheckArgument<int>(value);
-            return Int32ToBytes((int) value);
+            return BeConverter.GetBytes((int)value);
+        }
+
+        public static byte[] EncodeDate(int protocolVersion, IColumnInfo typeInfo, object value)
+        {
+            CheckArgument<LocalDate>(value);
+            var val = ((LocalDate) value).DaysSinceEpochCentered;
+            return new []
+            {
+                (byte) ((val & 0xFF000000) >> 24),
+                (byte) ((val & 0xFF0000) >> 16),
+                (byte) ((val & 0xFF00) >> 8),
+                (byte) (val & 0xFF)
+            };
+        }
+
+        public static byte[] EncodeTime(int protocolVersion, IColumnInfo typeInfo, object value)
+        {
+            return BeConverter.GetBytes(((LocalTime)value).TotalNanoseconds);
+        }
+
+        public static byte[] EncodeShort(int protocolVersion, IColumnInfo typeInfo, object value)
+        {
+            return BeConverter.GetBytes((short)value);
+        }
+
+        public static byte[] EncodeSByte(int protocolVersion, IColumnInfo typeInfo, object value)
+        {
+            return new[] {unchecked((byte)(sbyte)value)};
         }
 
         public static object DecodeFloat(int protocolVersion, IColumnInfo typeInfo, byte[] value, Type cSharpType)
         {
-            var buffer = (byte[]) value.Clone();
-            Array.Reverse(buffer);
-            return BitConverter.ToSingle(buffer, 0);
-        }
-
-        private static Type GetDefaultTypeFromFloat(IColumnInfo typeInfo)
-        {
-            return typeof (float);
+            return BeConverter.ToSingle(value);
         }
 
         public static byte[] EncodeFloat(int protocolVersion, IColumnInfo typeInfo, object value)
         {
-            CheckArgument<float>(value);
-            byte[] ret = BitConverter.GetBytes((float) value);
-            Array.Reverse(ret);
-            return ret;
+            return BeConverter.GetBytes((float) value);
         }
 
         public static object DecodeCustom(int protocolVersion, IColumnInfo typeInfo, byte[] value, Type cSharpType)
@@ -1122,7 +1048,7 @@ namespace Cassandra
                 throw new ArgumentException("Expected TupleColumnInfo typeInfo, obtained " + typeInfo.GetType());
             }
             var tupleInfo = (TupleColumnInfo) typeInfo;
-            Type genericTupleType = null;
+            Type genericTupleType;
             switch (tupleInfo.Elements.Count)
             {
                 case 1:
@@ -1164,25 +1090,24 @@ namespace Cassandra
             {
                 throw new ArgumentException("Udt mapping does not contain the Udt definition");
             }
-            var valuesList = new List<object>();
-            var stream = new MemoryStream(value, false);
-            var reader = new BEBinaryReader(stream);
-            foreach (var field in map.Definition.Fields)
+            var valuesList = new object[map.Definition.Fields.Count];
+            var offset = 0;
+            for (var i = 0; i < map.Definition.Fields.Count; i++)
             {
-                if (stream.Position < value.Length - 1)
+                var field = map.Definition.Fields[i];
+                if (offset >= value.Length)
                 {
-                    var length = reader.ReadInt32();
-                    if (length < 0)
-                    {
-                        valuesList.Add(null);
-                    }
-                    else
-                    {
-                        var buffer = new byte[length];
-                        reader.Read(buffer, 0, length);
-                        valuesList.Add(Decode(protocolVersion, buffer, field.TypeCode, field.TypeInfo));
-                    }
+                    break;
                 }
+                var length = BeConverter.ToInt32(value, offset);
+                offset += 4;
+                if (length < 0)
+                {
+                    continue;
+                }
+                var buffer = Utils.SliceBuffer(value, offset, length);
+                offset += length;
+                valuesList[i] = Decode(protocolVersion, buffer, field.TypeCode, field.TypeInfo);
             }
             return map.ToObject(valuesList);
         }
@@ -1197,46 +1122,29 @@ namespace Cassandra
             {
                 throw new ArgumentException("Expected UdtColumn typeInfo, obtained " + typeInfo.GetType());
             }
-            Type tupleType = null;
-            if (cSharpType != null &&
-                cSharpType.IsSerializable &&
-                typeof(IStructuralComparable).IsAssignableFrom(cSharpType) &&
-                cSharpType.FullName.StartsWith("System.Tuple"))
-            {
-                tupleType = cSharpType;
-            }
             var tupleInfo = (TupleColumnInfo) typeInfo;
-            var valuesList = new List<object>();
-            var stream = new MemoryStream(value, false);
-            var reader = new BEBinaryReader(stream);
-            foreach (var element in tupleInfo.Elements)
+            var tupleType = GetDefaultTypeFromTuple(tupleInfo);
+            var tupleValues = new object[tupleInfo.Elements.Count];
+            var offset = 0;
+            for (var i = 0; i < tupleInfo.Elements.Count; i++)
             {
-                if (stream.Position >= value.Length - 1)
+                var element = tupleInfo.Elements[i];
+                if (offset >= value.Length)
                 {
                     break;
                 }
-                var length = reader.ReadInt32();
+                var length = BeConverter.ToInt32(value, offset);
+                offset += 4;
                 if (length < 0)
                 {
-                    valuesList.Add(null);
+                    continue;
                 }
-                else
-                {
-                    var buffer = new byte[length];
-                    reader.Read(buffer, 0, length);
-                    valuesList.Add(Decode(protocolVersion, buffer, element.TypeCode, element.TypeInfo));
-                }
+                var buffer = Utils.SliceBuffer(value, offset, length);
+                offset += length;
+                tupleValues[i] = Decode(protocolVersion, buffer, element.TypeCode, element.TypeInfo);
             }
 
-            if (tupleType == null)
-            {
-                tupleType = GetDefaultTypeFromTuple(tupleInfo);
-            }
-            else if (tupleType.GetGenericArguments().Length > valuesList.Count)
-            {
-                valuesList.AddRange(Enumerable.Repeat<object>(null, tupleType.GetGenericArguments().Length - valuesList.Count));
-            }
-            return Activator.CreateInstance(tupleType, valuesList.ToArray());
+            return Activator.CreateInstance(tupleType, tupleValues);
         }
 
         private static Type GetDefaultTypeFromCustom(IColumnInfo typeInfo)
@@ -1275,11 +1183,6 @@ namespace Cassandra
             return buffer[0] == 1;
         }
 
-        private static Type GetDefaultTypeFromBoolean(IColumnInfo typeInfo)
-        {
-            return typeof (bool);
-        }
-
         public static byte[] EncodeBoolean(int protocolVersion, IColumnInfo typeInfo, object value)
         {
             CheckArgument<bool>(value);
@@ -1290,8 +1193,7 @@ namespace Cassandra
 
         public static object DecodeDecimal(int protocolVersion, IColumnInfo typeInfo, byte[] value, Type cSharpType)
         {
-            var buffer = (byte[]) value.Clone();
-            return TypeAdapters.DecimalTypeAdapter.ConvertFrom(buffer);
+            return TypeAdapters.DecimalTypeAdapter.ConvertFrom(value);
         }
 
         private static Type GetDefaultTypeFromDecimal(IColumnInfo typeInfo)
@@ -1301,8 +1203,7 @@ namespace Cassandra
 
         public static byte[] EncodeDecimal(int protocolVersion, IColumnInfo typeInfo, object value)
         {
-            byte[] ret = TypeAdapters.DecimalTypeAdapter.ConvertTo(value);
-            return ret;
+            return TypeAdapters.DecimalTypeAdapter.ConvertTo(value);
         }
 
         private delegate Type DefaultTypeFromCqlTypeDelegate(IColumnInfo typeInfo);

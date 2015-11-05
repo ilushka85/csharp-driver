@@ -17,7 +17,7 @@ namespace Cassandra.Tests
         public static Row CreateRow(IDictionary<string, object> valueMap)
         {
             var columns = new List<CqlColumn>();
-            var rowValues = new List<byte[]>();
+            var rowValues = new List<object>();
             foreach (var kv in valueMap)
             {
                 if (kv.Value != null)
@@ -30,10 +30,10 @@ namespace Cassandra.Tests
                 {
                     columns.Add(new CqlColumn() { Name = kv.Key, TypeCode = ColumnTypeCode.Text });
                 }
-                rowValues.Add(TypeCodec.Encode(2, kv.Value));
+                rowValues.Add(kv.Value);
             }
             var i = 0;
-            return new Row(2, rowValues.ToArray(), columns.ToArray(), valueMap.ToDictionary(kv => kv.Key, kv => i++));
+            return new Row(rowValues.ToArray(), columns.ToArray(), valueMap.ToDictionary(kv => kv.Key, kv => i++));
         }
 
         public static IEnumerable<Row> CreateRows(IEnumerable<Dictionary<string, object>> valueMapList)
@@ -96,11 +96,33 @@ namespace Cassandra.Tests
         /// <summary>
         /// Invokes the same action multiple times serially using the current thread
         /// </summary>
-        internal static void Invoke(Action action, int times)
+        public static void Invoke(Action action, int times)
         {
             for (var i = 0; i < times; i++)
             {
                 action();
+            }
+        }
+
+        /// <summary>
+        /// Invokes the same action multiple times serially using the current thread
+        /// </summary>
+        public static void Invoke(Action<int> action, int times)
+        {
+            for (var i = 0; i < times; i++)
+            {
+                action(i);
+            }
+        }
+
+        /// <summary>
+        /// Waits on the current thread until the condition is met
+        /// </summary>
+        public static void WaitUntil(Func<bool> condition, int intervals = 500, int attempts = 10)
+        {
+            for (var i = 0; i < attempts && !condition(); i++)
+            {
+                Thread.Sleep(intervals);
             }
         }
 
@@ -149,6 +171,26 @@ namespace Cassandra.Tests
             {
                 ((Timer)self).Dispose();
                 tcs.TrySetResult(result);
+            });
+
+            timer.Change(dueTimeMs, -1);
+            return tcs.Task;
+        }
+
+        public static Task<T> DelayedTask<T>(Func<T> result, int dueTimeMs = 50)
+        {
+            var tcs = new TaskCompletionSource<T>();
+            var timer = new Timer(delegate(object self)
+            {
+                ((Timer)self).Dispose();
+                try
+                {
+                    tcs.TrySetResult(result());
+                }
+                catch (Exception ex)
+                {
+                    tcs.TrySetException(ex);
+                }
             });
 
             timer.Change(dueTimeMs, -1);

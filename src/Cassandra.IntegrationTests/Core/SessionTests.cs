@@ -58,8 +58,7 @@ namespace Cassandra.IntegrationTests.Core
                 //Wait for the worker threads to cancel the rest of the operations.
                 DateTime timeInTheFuture = DateTime.Now.AddSeconds(11);
                 while (DateTime.Now < timeInTheFuture &&
-                       (taskList.Any(t => t.Status == TaskStatus.WaitingForActivation) ||
-                        taskList.All(t => t.Status == TaskStatus.RanToCompletion || t.Status == TaskStatus.Faulted)))
+                       (taskList.Any(t => t.Status == TaskStatus.WaitingForActivation)))
                 {
                     int waitMs = 500;
                     Trace.TraceInformation(string.Format("In method: {0}, waiting {1} more MS ... ", System.Reflection.MethodBase.GetCurrentMethod().Name, waitMs));
@@ -277,8 +276,8 @@ namespace Cassandra.IntegrationTests.Core
                 {
                     localSession1.Execute("SELECT * FROM system.local");
                 }
-                var pool11 = localSession1.GetConnectionPool(hosts1[0], HostDistance.Local);
-                var pool12 = localSession1.GetConnectionPool(hosts1[1], HostDistance.Local);
+                var pool11 = localSession1.GetOrCreateConnectionPool(hosts1[0], HostDistance.Local);
+                var pool12 = localSession1.GetOrCreateConnectionPool(hosts1[1], HostDistance.Local);
                 Assert.That(pool11.OpenConnections.Count(), Is.EqualTo(3));
                 Assert.That(pool12.OpenConnections.Count(), Is.EqualTo(3));
                 
@@ -294,8 +293,8 @@ namespace Cassandra.IntegrationTests.Core
                 {
                     localSession2.Execute("SELECT * FROM system.local");
                 }
-                var pool21 = localSession2.GetConnectionPool(hosts2[0], HostDistance.Local);
-                var pool22 = localSession2.GetConnectionPool(hosts2[1], HostDistance.Local);
+                var pool21 = localSession2.GetOrCreateConnectionPool(hosts2[0], HostDistance.Local);
+                var pool22 = localSession2.GetOrCreateConnectionPool(hosts2[1], HostDistance.Local);
                 Assert.That(pool21.OpenConnections.Count(), Is.EqualTo(1));
                 Assert.That(pool22.OpenConnections.Count(), Is.EqualTo(1));
             }
@@ -361,6 +360,35 @@ namespace Cassandra.IntegrationTests.Core
                 }
             });
             Diagnostics.CassandraTraceSwitch.Level = originalLevel;
+        }
+
+        [Test]
+        public void Session_Execute_Throws_TimeoutException_When_QueryAbortTimeout_Elapsed()
+        {
+            var dummyCluster = Cluster.Builder().AddContactPoint("0.0.0.0").Build();
+            Assert.AreNotEqual(dummyCluster.Configuration.ClientOptions.QueryAbortTimeout, Timeout.Infinite);
+            try
+            {
+                using (var localCluster = Cluster.Builder()
+                    .AddContactPoint(TestCluster.InitialContactPoint)
+                    //Disable socket read timeout
+                    .WithSocketOptions(new SocketOptions().SetReadTimeoutMillis(0))
+                    //Set abort timeout at a low value
+                    .WithQueryTimeout(1500)
+                    .Build())
+                {
+                    var localSession = localCluster.Connect("system");
+                    localSession.Execute("SELECT * FROM local");
+                    TestCluster.PauseNode(1);
+                    TestCluster.PauseNode(2);
+                    Assert.Throws<TimeoutException>(() => localSession.Execute("SELECT * FROM local"));
+                }
+            }
+            finally
+            {
+                TestCluster.ResumeNode(1);
+                TestCluster.ResumeNode(2);
+            }
         }
     }
 }

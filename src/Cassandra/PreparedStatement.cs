@@ -30,7 +30,6 @@ namespace Cassandra
     public class PreparedStatement
     {
         internal readonly RowSetMetadata Metadata;
-        internal readonly RowSetMetadata ResultMetadata;
         private readonly int _protocolVersion;
         private volatile RoutingKey _routingKey;
         private string[] _routingNames;
@@ -49,6 +48,17 @@ namespace Cassandra
         /// The keyspace were the prepared statement was first executed
         /// </summary>
         internal string Keyspace { get; private set; }
+
+        /// <summary>
+        /// Gets the the incoming payload, that is, the payload that the server
+        /// sent back with its prepared response, or null if the server did not include any custom payload.
+        /// </summary>
+        public IDictionary<string, byte[]> IncomingPayload { get; internal set; }
+
+        /// <summary>
+        /// Gets custom payload for that will be included when executing an Statement.
+        /// </summary>
+        public IDictionary<string, byte[]> OutgoingPayload { get; private set; }
 
         /// <summary>
         ///  Gets metadata on the bounded variables of this prepared statement.
@@ -71,18 +81,35 @@ namespace Cassandra
         /// </summary>
         public int[] RoutingIndexes { get; internal set; }
 
-        public ConsistencyLevel? ConsistencyLevel
+        /// <summary>
+        /// Gets the default consistency level for all executions using this instance
+        /// </summary>
+        public ConsistencyLevel? ConsistencyLevel { get; private set; }
+
+        /// <summary>
+        /// Determines if the query is idempotent, i.e. whether it can be applied multiple times without 
+        /// changing the result beyond the initial application.
+        /// <para>
+        /// Idempotence of the prepared statement plays a role in <see cref="ISpeculativeExecutionPolicy"/>.
+        /// If a query is <em>not idempotent</em>, the driver will not schedule speculative executions for it.
+        /// </para>
+        /// When the property is null, the driver will use the default value from the <see cref="QueryOptions.GetDefaultIdempotence()"/>.
+        /// </summary>
+        public bool? IsIdempotent { get; private set; }
+
+        /// <summary>
+        /// Initializes a new instance of the Cassandra.PreparedStatement class
+        /// </summary>
+        public PreparedStatement()
         {
-            get;
-            private set;
+            //Default constructor for client test and mocking frameworks
         }
 
-        internal PreparedStatement(RowSetMetadata metadata, byte[] id, string cql, string keyspace, RowSetMetadata resultMetadata, int protocolVersion)
+        internal PreparedStatement(RowSetMetadata metadata, byte[] id, string cql, string keyspace, int protocolVersion)
         {
             Metadata = metadata;
             Id = id;
             Cql = cql;
-            ResultMetadata = resultMetadata;
             Keyspace = keyspace;
             _protocolVersion = protocolVersion;
         }
@@ -103,7 +130,7 @@ namespace Cassandra
         ///  created BoundStatement. </param>
         /// <returns>the newly created <c>BoundStatement</c> with its variables
         ///  bound to <c>values</c>. </returns>
-        public BoundStatement Bind(params object[] values)
+        public virtual BoundStatement Bind(params object[] values)
         {
             var bs = new BoundStatement(this)
             {
@@ -210,5 +237,28 @@ namespace Cassandra
             _routingNames = names;
             return this;
         }
-    }
+
+        /// <summary>
+        /// Sets whether the prepared statement is idempotent.
+        /// <para>
+        /// Idempotence of the query plays a role in <see cref="ISpeculativeExecutionPolicy"/>.
+        /// If a query is <em>not idempotent</em>, the driver will not schedule speculative executions for it.
+        /// </para>
+        /// </summary>
+        public PreparedStatement SetIdempotence(bool value)
+        {
+            IsIdempotent = value;
+            return this;
+        }
+
+        /// <summary>
+        /// Sets a custom outgoing payload for this statement.
+        /// Each time an statement generated using this prepared statement is executed, this payload will be included in the request.
+        /// Once it is set using this method, the payload should not be modified.
+        /// </summary>
+        public PreparedStatement SetOutgoingPayload(IDictionary<string, byte[]> payload)
+        {
+            OutgoingPayload = payload;
+            return this;
+        }    }
 }
